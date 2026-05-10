@@ -116,7 +116,35 @@ export interface PolymarketMarket {
   category: string;
   volume: number;
   endDate: string;
-  outcomes: Array<{ name: string; price: number }>;
+  outcomes: Array<{ name: string; price: number; clobTokenId: string }>;
+}
+
+function parseOutcomes(
+  rawNames: string | undefined,
+  rawPrices: string | undefined,
+  rawTokenIds: string | undefined,
+): PolymarketMarket['outcomes'] {
+  try {
+    const names: string[] = JSON.parse(rawNames ?? '[]');
+    const prices: string[] = JSON.parse(rawPrices ?? '[]');
+    const tokenIds: string[] = JSON.parse(rawTokenIds ?? '[]');
+    return names.map((name, i) => ({
+      name,
+      price: parseFloat(prices[i] ?? '0'),
+      clobTokenId: tokenIds[i] ?? '',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function resolveOutcomeTokenId(
+  outcomes: PolymarketMarket['outcomes'],
+  outcome: string,
+): string | null {
+  const wanted = outcome.trim().toLowerCase();
+  const match = outcomes.find((o) => o.name.toLowerCase() === wanted);
+  return match?.clobTokenId || null;
 }
 
 export async function listPolymarketMarkets(filters?: {
@@ -145,6 +173,7 @@ export async function listPolymarketMarkets(filters?: {
       endDate?: string;
       outcomes?: string;
       outcomePrices?: string;
+      clobTokenIds?: string;
     }>;
 
     const now = Date.now();
@@ -158,23 +187,15 @@ export async function listPolymarketMarkets(filters?: {
         }
         return true;
       })
-      .map((m) => {
-        let outcomes: PolymarketMarket['outcomes'] = [];
-        try {
-          const names: string[] = JSON.parse(m.outcomes ?? '[]');
-          const prices: string[] = JSON.parse(m.outcomePrices ?? '[]');
-          outcomes = names.map((name, i) => ({ name, price: parseFloat(prices[i] ?? '0') }));
-        } catch {}
-        return {
-          id: m.id,
-          slug: m.slug,
-          question: m.question,
-          category: m.category ?? 'unknown',
-          volume: parseFloat(m.volume ?? '0'),
-          endDate: m.endDate ?? '',
-          outcomes,
-        };
-      });
+      .map((m) => ({
+        id: m.id,
+        slug: m.slug,
+        question: m.question,
+        category: m.category ?? 'unknown',
+        volume: parseFloat(m.volume ?? '0'),
+        endDate: m.endDate ?? '',
+        outcomes: parseOutcomes(m.outcomes, m.outcomePrices, m.clobTokenIds),
+      }));
 
     return ok(markets);
   } catch (e) {
@@ -201,6 +222,7 @@ export async function getPolymarketMarket(slug: string): Promise<Result<Polymark
       endDate?: string;
       outcomes?: string;
       outcomePrices?: string;
+      clobTokenIds?: string;
       description?: string;
       resolutionSource?: string;
     }>;
@@ -208,13 +230,6 @@ export async function getPolymarketMarket(slug: string): Promise<Result<Polymark
     if (!json.length) return err(`Market not found: ${slug}`);
 
     const m = json[0];
-    let outcomes: PolymarketMarket['outcomes'] = [];
-    try {
-      const names: string[] = JSON.parse(m.outcomes ?? '[]');
-      const prices: string[] = JSON.parse(m.outcomePrices ?? '[]');
-      outcomes = names.map((name, i) => ({ name, price: parseFloat(prices[i] ?? '0') }));
-    } catch {}
-
     return ok({
       id: m.id,
       slug: m.slug,
@@ -222,9 +237,167 @@ export async function getPolymarketMarket(slug: string): Promise<Result<Polymark
       category: m.category ?? 'unknown',
       volume: parseFloat(m.volume ?? '0'),
       endDate: m.endDate ?? '',
-      outcomes,
+      outcomes: parseOutcomes(m.outcomes, m.outcomePrices, m.clobTokenIds),
       description: m.description ?? '',
       resolutionSource: m.resolutionSource ?? '',
+    });
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+export interface PolymarketOrderbookLevel {
+  price: number;
+  size: number;
+}
+
+export interface PolymarketOrderbookResult {
+  slug: string;
+  outcome: string;
+  clobTokenId: string;
+  bestBid: number | null;
+  bestAsk: number | null;
+  spread: number | null;
+  midPrice: number | null;
+  bidDepthUsd: number;
+  askDepthUsd: number;
+  bids: PolymarketOrderbookLevel[];
+  asks: PolymarketOrderbookLevel[];
+  timestamp: string;
+}
+
+export async function getPolymarketOrderbook(
+  slug: string,
+  outcome: string,
+  depth = 10,
+): Promise<Result<PolymarketOrderbookResult>> {
+  const market = await getPolymarketMarket(slug);
+  if (!market.ok) return err(market.error);
+
+  const tokenId = resolveOutcomeTokenId(market.data.outcomes, outcome);
+  if (!tokenId) {
+    const available = market.data.outcomes.map((o) => o.name).join(', ');
+    return err(`Outcome "${outcome}" not found. Available: ${available}`);
+  }
+
+  try {
+    const res = await fetch(
+      `https://clob.polymarket.com/book?token_id=${encodeURIComponent(tokenId)}`,
+    );
+    if (!res.ok) return err(`Polymarket CLOB error: ${res.status} ${res.statusText}`);
+
+    const json = await res.json() as {
+      bids?: Array<{ price: string; size: string }>;
+      asks?: Array<{ price: string; size: string }>;
+      timestamp?: string;
+    };
+
+    const parseLevels = (raw?: Array<{ price: string; size: string }>): PolymarketOrderbookLevel[] =>
+      (raw ?? [])
+        .map((l) => ({ price: parseFloat(l.price), size: parseFloat(l.size) }))
+        .filter((l) => Number.isFinite(l.price) && Number.isFinite(l.size));
+
+    const allBids = parseLevels(json.bids).sort((a, b) => b.price - a.price);
+    const allAsks = parseLevels(json.asks).sort((a, b) => a.price - b.price);
+    const bids = allBids.slice(0, depth);
+    const asks = allAsks.slice(0, depth);
+
+    const bestBid = bids[0]?.price ?? null;
+    const bestAsk = asks[0]?.price ?? null;
+    const spread = bestBid != null && bestAsk != null ? bestAsk - bestBid : null;
+    const midPrice = bestBid != null && bestAsk != null ? (bestBid + bestAsk) / 2 : null;
+    const bidDepthUsd = allBids.reduce((sum, l) => sum + l.price * l.size, 0);
+    const askDepthUsd = allAsks.reduce((sum, l) => sum + l.price * l.size, 0);
+
+    return ok({
+      slug,
+      outcome,
+      clobTokenId: tokenId,
+      bestBid,
+      bestAsk,
+      spread,
+      midPrice,
+      bidDepthUsd,
+      askDepthUsd,
+      bids,
+      asks,
+      timestamp: json.timestamp ?? new Date().toISOString(),
+    });
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+export type PolymarketHistoryInterval = '1m' | '1h' | '6h' | '1d' | '1w' | 'max';
+
+export interface PolymarketPricePoint {
+  timestamp: number;
+  price: number;
+}
+
+export interface PolymarketPriceHistoryResult {
+  slug: string;
+  outcome: string;
+  clobTokenId: string;
+  interval: PolymarketHistoryInterval;
+  points: PolymarketPricePoint[];
+  firstPrice: number | null;
+  lastPrice: number | null;
+  minPrice: number | null;
+  maxPrice: number | null;
+  changePct: number | null;
+}
+
+const VALID_INTERVALS: PolymarketHistoryInterval[] = ['1m', '1h', '6h', '1d', '1w', 'max'];
+
+export async function getPolymarketPriceHistory(
+  slug: string,
+  outcome: string,
+  interval: PolymarketHistoryInterval = '1d',
+): Promise<Result<PolymarketPriceHistoryResult>> {
+  if (!VALID_INTERVALS.includes(interval)) {
+    return err(`Invalid interval "${interval}". Use one of: ${VALID_INTERVALS.join(', ')}`);
+  }
+
+  const market = await getPolymarketMarket(slug);
+  if (!market.ok) return err(market.error);
+
+  const tokenId = resolveOutcomeTokenId(market.data.outcomes, outcome);
+  if (!tokenId) {
+    const available = market.data.outcomes.map((o) => o.name).join(', ');
+    return err(`Outcome "${outcome}" not found. Available: ${available}`);
+  }
+
+  try {
+    const params = new URLSearchParams({ market: tokenId, interval });
+    const res = await fetch(`https://clob.polymarket.com/prices-history?${params.toString()}`);
+    if (!res.ok) return err(`Polymarket CLOB error: ${res.status} ${res.statusText}`);
+
+    const json = await res.json() as { history?: Array<{ t: number; p: number }> };
+    const points: PolymarketPricePoint[] = (json.history ?? [])
+      .map((pt) => ({ timestamp: pt.t, price: pt.p }))
+      .filter((pt) => Number.isFinite(pt.price));
+
+    const firstPrice = points[0]?.price ?? null;
+    const lastPrice = points[points.length - 1]?.price ?? null;
+    const minPrice = points.length ? Math.min(...points.map((p) => p.price)) : null;
+    const maxPrice = points.length ? Math.max(...points.map((p) => p.price)) : null;
+    const changePct =
+      firstPrice != null && lastPrice != null && firstPrice > 0
+        ? ((lastPrice - firstPrice) / firstPrice) * 100
+        : null;
+
+    return ok({
+      slug,
+      outcome,
+      clobTokenId: tokenId,
+      interval,
+      points,
+      firstPrice,
+      lastPrice,
+      minPrice,
+      maxPrice,
+      changePct,
     });
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));

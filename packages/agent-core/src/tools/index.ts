@@ -3,7 +3,15 @@ import { Type } from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getRecentRuns, getAllFormulaVersions } from '@loob/db';
 import { searchNews } from './news-search.js';
-import { getCryptoPrice, getCryptoOHLC, listPolymarketMarkets, getPolymarketMarket } from './market-data.js';
+import {
+  getCryptoPrice,
+  getCryptoOHLC,
+  listPolymarketMarkets,
+  getPolymarketMarket,
+  getPolymarketOrderbook,
+  getPolymarketPriceHistory,
+  type PolymarketHistoryInterval,
+} from './market-data.js';
 import { paperTradeOpen, paperTradeClose, paperTradeListOpen } from './paper-trade.js';
 import { requestUserInput } from './request-user-input.js';
 import { proposeLiveTrade } from './propose-live-trade.js';
@@ -78,6 +86,32 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
           slug: { type: Type.STRING, description: 'Market slug from list_polymarket_markets' },
         },
         required: ['slug'],
+      },
+    },
+    {
+      name: 'get_polymarket_orderbook',
+      description: 'Get the live CLOB order book for one outcome of a Polymarket market. Use this to check liquidity, spread, and depth BEFORE sizing a paper trade.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          slug: { type: Type.STRING, description: 'Market slug from list_polymarket_markets' },
+          outcome: { type: Type.STRING, description: 'Outcome name, e.g. "Yes" or "No"' },
+          depth: { type: Type.NUMBER, description: 'Number of levels per side to return (default 10, max 50)' },
+        },
+        required: ['slug', 'outcome'],
+      },
+    },
+    {
+      name: 'get_polymarket_price_history',
+      description: 'Get historical price series for one outcome of a Polymarket market. Useful for spotting trends, mean-reversion setups, or validating a thesis against past movement.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          slug: { type: Type.STRING, description: 'Market slug from list_polymarket_markets' },
+          outcome: { type: Type.STRING, description: 'Outcome name, e.g. "Yes" or "No"' },
+          interval: { type: Type.STRING, description: 'One of: 1m, 1h, 6h, 1d, 1w, max (default 1d)' },
+        },
+        required: ['slug', 'outcome'],
       },
     },
     {
@@ -212,6 +246,22 @@ export function buildToolHandlers(
 
     get_polymarket_market: async (args) => {
       return getPolymarketMarket(String(args.slug));
+    },
+
+    get_polymarket_orderbook: async (args) => {
+      return getPolymarketOrderbook(
+        String(args.slug),
+        String(args.outcome),
+        args.depth ? Math.min(Number(args.depth), 50) : 10,
+      );
+    },
+
+    get_polymarket_price_history: async (args) => {
+      return getPolymarketPriceHistory(
+        String(args.slug),
+        String(args.outcome),
+        (args.interval ? String(args.interval) : '1d') as PolymarketHistoryInterval,
+      );
     },
 
     paper_trade_open: async (args) => {

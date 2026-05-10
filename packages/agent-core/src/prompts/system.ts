@@ -99,6 +99,8 @@ ${recentRunsSummary}
 - get_crypto_ohlc(symbol, interval, lookback): Get OHLC candle data from Binance.
 - list_polymarket_markets(category?, min_volume?, max_days_to_resolution?): Browse open Polymarket prediction markets.
 - get_polymarket_market(slug): Get full details on a specific Polymarket market.
+- get_polymarket_orderbook(slug, outcome, depth?): Get live CLOB order book for one outcome (e.g. "Yes"). Use this to check liquidity, spread, and depth BEFORE sizing a Polymarket paper trade.
+- get_polymarket_price_history(slug, outcome, interval?): Historical price series for one outcome (intervals: 1m, 1h, 6h, 1d, 1w, max). Use for trend analysis and validating theses against past movement.
 - paper_trade_open(instrument_kind, instrument_id, side, size_usd, thesis, exit_criteria): Open a simulated position. Always include take_profit, stop_loss, time_limit, and conditions in exit_criteria.
 - paper_trade_close(trade_id, reason): Close an open paper position.
 - paper_trade_list_open(): List all currently open paper positions.

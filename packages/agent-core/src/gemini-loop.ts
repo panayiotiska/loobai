@@ -9,7 +9,7 @@ type DB = SupabaseClient<any>;
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_MODEL = 'gemini-2.0-flash';
 
 export interface GeminiLoopInput {
   systemPrompt: string;

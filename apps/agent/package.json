@@ -1,0 +1,22 @@
+{
+  "name": "@loob/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "research": "dotenv -e ../../.env -- tsx src/research-tick.ts",
+    "monitor": "dotenv -e ../../.env -- tsx src/monitor-tick.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@loob/agent-core": "workspace:*",
+    "@loob/db": "workspace:*",
+    "@loob/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^7.4.2",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
+  }
+}

@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-mono: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+}
+
+body {
+  background-color: #1a1a2e;
+  color: #c8d8e8;
+  font-family: var(--font-mono);
+  overflow: hidden;
+}
+
+/* Pixel-art rendering for sprites */
+.pixelated {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}

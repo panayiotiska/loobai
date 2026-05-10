@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { SessionRefresher } from '@/components/session-refresher';
 
 export const metadata: Metadata = {
   title: 'Loob.ai — Laab Room',
@@ -13,7 +14,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="bg-lab-bg min-h-screen">{children}</body>
+      <body className="bg-lab-bg min-h-screen">
+        <SessionRefresher />
+        {children}
+      </body>
     </html>
   );
 }

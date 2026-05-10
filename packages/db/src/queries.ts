@@ -161,6 +161,84 @@ export async function closeTrade(
   if (error) throw new Error(`closeTrade: ${error.message}`);
 }
 
+export interface PortfolioStats {
+  openCount: number;
+  closedCount: number;
+  openExposureUsd: number;
+  openUnrealizedPnlUsd: number;
+  realizedPnlUsd: number;
+  realizedPnlLast30dUsd: number;
+  winRate: number | null;
+  wins: number;
+  losses: number;
+  biggestWinUsd: number | null;
+  biggestLossUsd: number | null;
+  avgWinUsd: number | null;
+  avgLossUsd: number | null;
+  pnlCurve: Array<{ closedAt: string; cumulativePnlUsd: number }>;
+}
+
+export async function getPortfolioStats(db: DB): Promise<PortfolioStats> {
+  const { data, error } = await db
+    .from('trades')
+    .select('size_usd, pnl_usd, status, closed_at, opened_at')
+    .order('opened_at', { ascending: true });
+  if (error) throw new Error(`getPortfolioStats: ${error.message}`);
+
+  const rows = (data ?? []) as Array<{
+    size_usd: number;
+    pnl_usd: number | null;
+    status: 'open' | 'closed' | 'cancelled';
+    closed_at: string | null;
+    opened_at: string;
+  }>;
+
+  const open = rows.filter((r) => r.status === 'open');
+  const closed = rows
+    .filter((r) => r.status === 'closed' && r.pnl_usd != null && r.closed_at != null)
+    .sort((a, b) => (a.closed_at! < b.closed_at! ? -1 : 1));
+
+  const openExposureUsd = open.reduce((s, r) => s + r.size_usd, 0);
+  const openUnrealizedPnlUsd = open.reduce((s, r) => s + (r.pnl_usd ?? 0), 0);
+  const realizedPnlUsd = closed.reduce((s, r) => s + (r.pnl_usd ?? 0), 0);
+
+  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const realizedPnlLast30dUsd = closed
+    .filter((r) => new Date(r.closed_at!).getTime() >= thirtyDaysAgo)
+    .reduce((s, r) => s + (r.pnl_usd ?? 0), 0);
+
+  const wins = closed.filter((r) => (r.pnl_usd ?? 0) > 0);
+  const losses = closed.filter((r) => (r.pnl_usd ?? 0) < 0);
+  const winRate = closed.length ? wins.length / closed.length : null;
+  const biggestWinUsd = wins.length ? Math.max(...wins.map((r) => r.pnl_usd!)) : null;
+  const biggestLossUsd = losses.length ? Math.min(...losses.map((r) => r.pnl_usd!)) : null;
+  const avgWinUsd = wins.length ? wins.reduce((s, r) => s + r.pnl_usd!, 0) / wins.length : null;
+  const avgLossUsd = losses.length ? losses.reduce((s, r) => s + r.pnl_usd!, 0) / losses.length : null;
+
+  let running = 0;
+  const pnlCurve = closed.map((r) => {
+    running += r.pnl_usd ?? 0;
+    return { closedAt: r.closed_at!, cumulativePnlUsd: running };
+  });
+
+  return {
+    openCount: open.length,
+    closedCount: closed.length,
+    openExposureUsd,
+    openUnrealizedPnlUsd,
+    realizedPnlUsd,
+    realizedPnlLast30dUsd,
+    winRate,
+    wins: wins.length,
+    losses: losses.length,
+    biggestWinUsd,
+    biggestLossUsd,
+    avgWinUsd,
+    avgLossUsd,
+    pnlCurve,
+  };
+}
+
 // --- Agent requests ---
 
 export async function getPendingRequests(db: DB): Promise<AgentRequest[]> {

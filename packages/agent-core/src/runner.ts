@@ -15,6 +15,7 @@ import {
 import { buildSystemPrompt } from './prompts/system.js';
 import { runGeminiLoop, buildToolHandlersForRun } from './gemini-loop.js';
 import { buildToolDeclarations } from './tools/index.js';
+import { autoCloseTriggeredTrades } from './tools/paper-trade.js';
 import { sendTelegramSummary, sendTelegramError } from './telegram.js';
 import pino from 'pino';
 
@@ -37,6 +38,14 @@ export async function runTick(kind: RunKind): Promise<void> {
   log.info({ msg: 'run created', runId: run.id, kind });
 
   try {
+    // Deterministic exits BEFORE the LLM looks at open positions, so trades that
+    // already hit TP/SL/time_limit are closed without depending on the agent's memory.
+    // Always runs (cheap) — but most meaningful on monitor ticks.
+    const autoClose = await autoCloseTriggeredTrades(db);
+    if (autoClose.closed.length || autoClose.errors.length) {
+      log.info({ msg: 'auto-close swept', runId: run.id, closed: autoClose.closed.length, errors: autoClose.errors.length });
+    }
+
     // Load context
     const [currentFormula, openTrades, pendingRequests, recentRuns, unconsumedNotes] =
       await Promise.all([

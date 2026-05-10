@@ -1,7 +1,7 @@
 import type { GoogleGenAI, FunctionDeclaration } from '@google/genai';
 import { Type } from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getRecentRuns, getAllFormulaVersions } from '@loob/db';
+import { getRecentRuns, getAllFormulaVersions, getPortfolioStats } from '@loob/db';
 import { searchNews } from './news-search.js';
 import {
   getCryptoPrice,
@@ -12,6 +12,7 @@ import {
   getPolymarketPriceHistory,
   type PolymarketHistoryInterval,
 } from './market-data.js';
+import { getCryptoDerivatives } from './derivatives.js';
 import { paperTradeOpen, paperTradeClose, paperTradeListOpen } from './paper-trade.js';
 import { requestUserInput } from './request-user-input.js';
 import { proposeLiveTrade } from './propose-live-trade.js';
@@ -62,6 +63,17 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
           lookback: { type: Type.NUMBER, description: 'Number of candles to return (max 500)' },
         },
         required: ['symbol', 'interval', 'lookback'],
+      },
+    },
+    {
+      name: 'get_crypto_derivatives',
+      description: 'Get current funding rate, annualized funding, and open interest for a crypto perp from Binance Futures. Use BEFORE opening directional crypto trades — extreme funding or OI shifts signal crowded positioning.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          symbol: { type: Type.STRING, description: 'Ticker symbol, e.g. "BTC", "ETH", "SOL"' },
+        },
+        required: ['symbol'],
       },
     },
     {
@@ -209,6 +221,15 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
         required: [],
       },
     },
+    {
+      name: 'get_portfolio_stats',
+      description: 'Get quantitative performance stats across all paper trades: win rate, realized PnL, open exposure, biggest win/loss, plus the cumulative PnL curve. Use this to self-grade the current formula against actual results.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {},
+        required: [],
+      },
+    },
   ];
 }
 
@@ -232,6 +253,10 @@ export function buildToolHandlers(
         String(args.interval),
         Number(args.lookback),
       );
+    },
+
+    get_crypto_derivatives: async (args) => {
+      return getCryptoDerivatives(String(args.symbol));
     },
 
     list_polymarket_markets: async (args) => {
@@ -330,6 +355,16 @@ export function buildToolHandlers(
           .filter(Boolean)
           .slice(0, 10);
         return { ok: true, data: lessons.join('\n\n') || 'No lessons recorded yet.' };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+
+    get_portfolio_stats: async () => {
+      try {
+        const stats = await getPortfolioStats(db);
+        // Trim the curve in the tool response — agent doesn't need every point
+        return { ok: true, data: { ...stats, pnlCurve: stats.pnlCurve.slice(-30) } };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }

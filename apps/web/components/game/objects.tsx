@@ -9,6 +9,8 @@ interface ObjectProps {
   pendingCount?: number;
   formulaVersion?: number;
   openTrades?: Array<{ id: string; side: string; instrument_label?: string | null; instrument_id: string; pnl_usd?: number | null }>;
+  realizedPnlUsd?: number;
+  winRate?: number | null;
 }
 
 /* ── FORMULA EASEL ── left side, above river */
@@ -57,12 +59,20 @@ export function FormulaEasel({ onActivate, formulaVersion }: ObjectProps) {
 }
 
 /* ── BULLETIN BOARD ── right side, above river */
-export function BulletinBoard({ onActivate, pendingCount = 0 }: ObjectProps) {
+export function BulletinBoard({ onActivate, pendingCount = 0, realizedPnlUsd, winRate }: ObjectProps) {
+  const pnlSign = realizedPnlUsd != null && realizedPnlUsd >= 0 ? '+' : realizedPnlUsd != null ? '-' : '';
+  const pnlAbs = realizedPnlUsd != null ? Math.abs(realizedPnlUsd) : null;
+  const pnlText =
+    pnlAbs == null ? null
+      : pnlAbs >= 1000 ? `${pnlSign}$${(pnlAbs / 1000).toFixed(1)}k`
+      : `${pnlSign}$${pnlAbs.toFixed(0)}`;
+  const pnlColor = realizedPnlUsd != null && realizedPnlUsd >= 0 ? '#1e8a3a' : '#a8312a';
+
   return (
     <div
       style={{ position: 'absolute', left: '63%', top: '58%', cursor: 'pointer', zIndex: 8 }}
       onClick={(e) => { e.stopPropagation(); onActivate(66, 70, 'board'); }}
-      title="Board — click to view requests"
+      title={pnlText ? `Board — PnL ${pnlText}` : 'Board — click to view'}
     >
       <svg width="72" height="88" viewBox="0 0 72 88" className="pixelated" style={{ display: 'block' }}>
         {/* Post */}
@@ -77,10 +87,24 @@ export function BulletinBoard({ onActivate, pendingCount = 0 }: ObjectProps) {
         <circle cx="23" cy="13" r="2" fill="#e94560" />
         <rect x="38" y="10" width="18" height="14" rx="1" fill="#e0f0ff" transform="rotate(2 38 10)" />
         <circle cx="47" cy="11" r="2" fill="#3a7bd5" />
-        <rect x="14" y="34" width="20" height="12" rx="1" fill="#f0ffe0" transform="rotate(1 14 34)" />
-        <circle cx="24" cy="35" r="2" fill="#2eb82e" />
-        <rect x="38" y="32" width="24" height="18" rx="1" fill="#fff0e0" transform="rotate(-2 38 32)" />
-        <circle cx="50" cy="33" r="2" fill="#e9a020" />
+        {/* PnL pinned note (replaces lower-left green note) */}
+        <g transform="rotate(1 14 34)">
+          <rect x="11" y="33" width="24" height="14" rx="1" fill="#fffef0" stroke="#5a3a1a" strokeWidth="0.4" />
+          <circle cx="23" cy="35" r="2" fill="#2eb82e" />
+          <text x="23" y="41" textAnchor="middle" fontSize="5" fontFamily="monospace" fontWeight="bold" fill="#444">PnL</text>
+          <text x="23" y="46.5" textAnchor="middle" fontSize="5.5" fontFamily="monospace" fontWeight="bold" fill={pnlColor}>
+            {pnlText ?? '—'}
+          </text>
+        </g>
+        {/* Win-rate pinned note (replaces lower-right orange note) */}
+        <g transform="rotate(-2 38 32)">
+          <rect x="37" y="31" width="24" height="18" rx="1" fill="#fff0e0" stroke="#5a3a1a" strokeWidth="0.4" />
+          <circle cx="49" cy="33" r="2" fill="#e9a020" />
+          <text x="49" y="40" textAnchor="middle" fontSize="4.5" fontFamily="monospace" fill="#666">WIN RATE</text>
+          <text x="49" y="46.5" textAnchor="middle" fontSize="7" fontFamily="monospace" fontWeight="bold" fill="#4a3010">
+            {winRate != null ? `${Math.round(winRate * 100)}%` : '—'}
+          </text>
+        </g>
         {/* Pending badge */}
         {pendingCount > 0 && (
           <>

@@ -20,7 +20,8 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @loob/agent run research
+      - run: pnpm --filter @loob/shared build && pnpm --filter @loob/db build && pnpm --filter @loob/agent-core build
+      - run: pnpm --filter @loob/agent run research:ci
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

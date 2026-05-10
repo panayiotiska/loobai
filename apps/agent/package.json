@@ -6,6 +6,8 @@
   "scripts": {
     "research": "dotenv -e ../../.env -- tsx src/research-tick.ts",
     "monitor": "dotenv -e ../../.env -- tsx src/monitor-tick.ts",
+    "research:ci": "tsx src/research-tick.ts",
+    "monitor:ci": "tsx src/monitor-tick.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },

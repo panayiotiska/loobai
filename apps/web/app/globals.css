@@ -18,3 +18,65 @@ body {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
+
+/* ── Game world animations ── */
+
+@keyframes walk-bob {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-2px); }
+}
+
+@keyframes river-flow {
+  from { background-position-x: 0px; }
+  to   { background-position-x: 64px; }
+}
+
+@keyframes waterfall-drop {
+  0%   { transform: translateY(-6px); opacity: 0.9; }
+  100% { transform: translateY(6px);  opacity: 0.2; }
+}
+
+@keyframes wing-flap {
+  0%, 100% { transform: scaleX(1); }
+  50%      { transform: scaleX(0.2); }
+}
+
+@keyframes butterfly-1 {
+  0%   { transform: translate(0px, 0px)   rotate(0deg);   }
+  25%  { transform: translate(40px,-25px) rotate(12deg);  }
+  50%  { transform: translate(70px, 8px)  rotate(-8deg);  }
+  75%  { transform: translate(35px, 30px) rotate(5deg);   }
+  100% { transform: translate(0px, 0px)   rotate(0deg);   }
+}
+
+@keyframes butterfly-2 {
+  0%   { transform: translate(0px, 0px)    rotate(0deg);  }
+  25%  { transform: translate(-30px,-18px) rotate(-10deg);}
+  50%  { transform: translate(-55px, 12px) rotate(6deg);  }
+  75%  { transform: translate(-20px, 28px) rotate(-4deg); }
+  100% { transform: translate(0px, 0px)    rotate(0deg);  }
+}
+
+@keyframes butterfly-3 {
+  0%   { transform: translate(0px, 0px)   rotate(0deg);  }
+  33%  { transform: translate(25px,-35px) rotate(8deg);  }
+  66%  { transform: translate(-20px,-20px)rotate(-6deg); }
+  100% { transform: translate(0px, 0px)   rotate(0deg);  }
+}
+
+@keyframes grass-shimmer {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.92; }
+}
+
+@keyframes click-ripple {
+  0%   { transform: translate(-50%, -50%) scale(0);   opacity: 0.8; }
+  100% { transform: translate(-50%, -50%) scale(3);   opacity: 0; }
+}
+
+.animate-walk-bob    { animation: walk-bob    0.25s ease-in-out infinite; }
+.animate-river-flow  { animation: river-flow  2s linear infinite; }
+.animate-wing-flap   { animation: wing-flap   0.35s ease-in-out infinite; }
+.animate-butterfly-1 { animation: butterfly-1 6s ease-in-out infinite; }
+.animate-butterfly-2 { animation: butterfly-2 7s ease-in-out infinite 1s; }
+.animate-butterfly-3 { animation: butterfly-3 5s ease-in-out infinite 2.5s; }

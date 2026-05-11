@@ -89,7 +89,7 @@ export async function getCryptoOHLC(
   const pair = `${symbol.toUpperCase()}USDT`;
   try {
     const res = await fetch(
-      `https://api.binance.com/api/v3/klines?symbol=${pair}&interval=${interval}&limit=${lookback}`,
+      `https://data-api.binance.vision/api/v3/klines?symbol=${pair}&interval=${interval}&limit=${lookback}`,
     );
     if (!res.ok) return err(`Binance error: ${res.status} ${res.statusText}`);
 

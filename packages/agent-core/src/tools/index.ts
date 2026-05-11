@@ -54,7 +54,7 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
     },
     {
       name: 'get_crypto_ohlc',
-      description: 'Get OHLC candlestick data for a cryptocurrency from Binance.',
+      description: 'Get OHLC candlestick data for a cryptocurrency spot pair.',
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -67,7 +67,7 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
     },
     {
       name: 'get_crypto_derivatives',
-      description: 'Get current funding rate, annualized funding, and open interest for a crypto perp from Binance Futures. Use BEFORE opening directional crypto trades — extreme funding or OI shifts signal crowded positioning.',
+      description: 'Get current funding rate, annualized funding, and open interest for a USDT-margined crypto perpetual. Use BEFORE opening directional crypto trades — extreme funding or OI shifts signal crowded positioning.',
       parameters: {
         type: Type.OBJECT,
         properties: {

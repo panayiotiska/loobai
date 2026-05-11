@@ -96,8 +96,8 @@ ${recentRunsSummary}
 ## Available tools
 - search_news(query): Search the web for current news and information using Gemini grounding. Always cite URLs.
 - get_crypto_price(symbol): Get current spot price and 24h change for a crypto asset (e.g. "BTC", "ETH").
-- get_crypto_ohlc(symbol, interval, lookback): Get OHLC candle data from Binance.
-- get_crypto_derivatives(symbol): Current funding rate (incl. annualized) and open interest from Binance Futures. Use BEFORE opening directional crypto trades — extreme funding or sudden OI shifts signal crowded positioning.
+- get_crypto_ohlc(symbol, interval, lookback): Get OHLC candle data for a USDT spot pair.
+- get_crypto_derivatives(symbol): Current funding rate (incl. annualized) and open interest for a USDT-margined perp. Use BEFORE opening directional crypto trades — extreme funding or sudden OI shifts signal crowded positioning.
 - list_polymarket_markets(category?, min_volume?, max_days_to_resolution?): Browse open Polymarket prediction markets.
 - get_polymarket_market(slug): Get full details on a specific Polymarket market.
 - get_polymarket_orderbook(slug, outcome, depth?): Get live CLOB order book for one outcome (e.g. "Yes"). Use this to check liquidity, spread, and depth BEFORE sizing a Polymarket paper trade.

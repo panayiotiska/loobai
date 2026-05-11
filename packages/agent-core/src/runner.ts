@@ -1,4 +1,4 @@
-import type { RunKind } from '@loob/shared';
+import type { RunKind, RunOutput } from '@loob/shared';
 import {
   createServiceClient,
   createRun,
@@ -54,19 +54,28 @@ export async function runTick(kind: RunKind): Promise<void> {
   const run = await createRun(db, kind);
   log.info({ msg: 'run created', runId: run.id, kind });
 
+  let finalJson: RunOutput;
   try {
     // Deterministic exits BEFORE the LLM looks at open positions, so trades that
     // already hit TP/SL/time_limit are closed without depending on the agent's memory.
-    const autoClose = await autoCloseTriggeredTrades(db);
-    if (autoClose.closed.length || autoClose.errors.length) {
-      log.info({ msg: 'auto-close swept', runId: run.id, closed: autoClose.closed.length, errors: autoClose.errors.length });
+    // A transient Supabase/network blip here must not kill the whole tick — the
+    // sweeps are best-effort, and the LLM still has its own paper_trade_close tool.
+    try {
+      const autoClose = await autoCloseTriggeredTrades(db);
+      if (autoClose.closed.length || autoClose.errors.length) {
+        log.info({ msg: 'auto-close swept', runId: run.id, closed: autoClose.closed.length, errors: autoClose.errors.length });
+      }
+    } catch (e) {
+      log.warn({ msg: 'auto-close sweep skipped', runId: run.id, err: String(e) });
     }
 
-    // Mark remaining open trades to market so unrealized PnL on the UI and
-    // in the agent's context is the actual mark-to-market number rather than null.
-    const mtm = await markOpenTradesToMarket(db);
-    if (mtm.updated || mtm.errors.length) {
-      log.info({ msg: 'mark-to-market swept', runId: run.id, updated: mtm.updated, skipped: mtm.skipped, errors: mtm.errors.length });
+    try {
+      const mtm = await markOpenTradesToMarket(db);
+      if (mtm.updated || mtm.errors.length) {
+        log.info({ msg: 'mark-to-market swept', runId: run.id, updated: mtm.updated, skipped: mtm.skipped, errors: mtm.errors.length });
+      }
+    } catch (e) {
+      log.warn({ msg: 'mark-to-market sweep skipped', runId: run.id, err: String(e) });
     }
 
     const [currentFormula, openTrades, pendingRequests, recentRuns, unconsumedNotes] =
@@ -99,7 +108,8 @@ export async function runTick(kind: RunKind): Promise<void> {
       db,
     });
 
-    const { finalJson, tokenUsage } = result;
+    const { tokenUsage } = result;
+    finalJson = result.finalJson;
 
     // Persist new formula version if agent updated it
     if (finalJson.newFormula) {
@@ -131,18 +141,6 @@ export async function runTick(kind: RunKind): Promise<void> {
     });
 
     log.info({ msg: 'run success', runId: run.id, kind });
-
-    // Reload open trades with updated state for Telegram
-    const freshOpenTrades = await getOpenTrades(db);
-    const freshPendingRequests = await getPendingRequests(db);
-
-    await sendTelegramSummary({
-      runId: run.id,
-      runKind: kind,
-      output: finalJson,
-      openTrades: freshOpenTrades,
-      pendingRequestCount: freshPendingRequests.length,
-    });
   } catch (err) {
     log.error({ msg: 'run failed', runId: run.id, kind, err: String(err) });
 
@@ -154,5 +152,23 @@ export async function runTick(kind: RunKind): Promise<void> {
 
     await sendTelegramError(run.id, err);
     throw err;
+  }
+
+  // Telegram + post-success reads live OUTSIDE the try/catch above: a flaky
+  // Telegram POST or Supabase blip here must not flip an already-persisted
+  // success row to failed (and would also re-send as an error to Telegram).
+  try {
+    const freshOpenTrades = await getOpenTrades(db);
+    const freshPendingRequests = await getPendingRequests(db);
+
+    await sendTelegramSummary({
+      runId: run.id,
+      runKind: kind,
+      output: finalJson,
+      openTrades: freshOpenTrades,
+      pendingRequestCount: freshPendingRequests.length,
+    });
+  } catch (e) {
+    log.warn({ msg: 'post-success telegram summary failed', runId: run.id, err: String(e) });
   }
 }

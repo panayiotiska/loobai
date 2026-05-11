@@ -26,6 +26,7 @@ apps/web               — Next.js 14 App Router, Supabase auth, Laab Room UI
 
 - **No Database generic on SupabaseClient** — all DB functions use `SupabaseClient<any>` with explicit return type casts (e.g. `return data as Run`). Do not add the Database generic back — it causes `never` type resolution issues with the Supabase JS client.
 - **Manual Gemini tool loop** — `gemini-loop.ts` manually iterates tool calls rather than using the SDK's auto loop. Max 12 iterations for research, 4 for monitor. Retries 503/429 with backoff.
+- **Model is Gemma 4 26B A4B-it** (`gemma-4-26b-a4b-it`) served via the Gemini API, NOT a Gemini model. This is intentional — Gemma 4 gives higher free-tier quota than Gemini 2.5 Flash and supports native function calling, multimodal input, 256K context, and structured JSON output through the same `FunctionDeclaration` API. Do NOT "correct" this to `gemini-2.5-flash` or assume the model name is a typo — Gemma 4 26B A4B is a real MoE model (26B total / 4B active params). Docs: https://ai.google.dev/gemma/docs/core/model_card_4 and https://ai.google.dev/gemma/docs/capabilities/text/function-calling-gemma4.
 - **Telegram outbound via raw fetch** — no SDK. One POST to `api.telegram.org`.
 - **ESM everywhere** — `"type": "module"` in all package.jsons. Use `.js` extensions in imports even for `.ts` files.
 - **pino for logging** — structured JSON. Use `log.info({ msg: '...', ...context })` not `log.info('...')`.

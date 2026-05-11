@@ -9,7 +9,7 @@ type DB = SupabaseClient<any>;
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 
-const GEMINI_MODEL = 'gemma-4-31b-it';
+const GEMINI_MODEL = 'gemma-4-26b-a4b-it';
 
 export interface GeminiLoopInput {
   systemPrompt: string;
@@ -59,7 +59,7 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
         break;
       } catch (e) {
         const status = (e as { status?: number }).status;
-        if ((status === 503 || status === 429) && attempt < 2) {
+        if ((status === 503 || status === 500 || status === 429) && attempt < 2) {
           const delay = (attempt + 1) * 15000;
           log.warn({ msg: 'gemini transient error, retrying', runId: input.runId, attempt, status, delay });
           await new Promise((r) => setTimeout(r, delay));

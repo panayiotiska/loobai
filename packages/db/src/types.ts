@@ -44,8 +44,29 @@ export interface Trade {
   thesis: string;
   exit_criteria: Record<string, unknown>;
   pnl_usd: number | null;
+  confidence: number | null;
   opened_at: string;
   closed_at: string | null;
+}
+
+export interface SystemState {
+  id: number;
+  paused: boolean;
+  paused_at: string | null;
+  paused_reason: string | null;
+  paused_by: string | null;
+}
+
+export interface ToolCall {
+  id: string;
+  run_id: string;
+  tool_name: string;
+  args_json: unknown;
+  ok: boolean;
+  result_summary: string | null;
+  error: string | null;
+  duration_ms: number | null;
+  created_at: string;
 }
 
 export interface AgentRequest {
@@ -92,6 +113,18 @@ export type Database = {
         Row: AgentRequest;
         Insert: Partial<Pick<AgentRequest, 'id' | 'created_at'>> & Omit<AgentRequest, 'id' | 'created_at'>;
         Update: Partial<AgentRequest>;
+        Relationships: [];
+      };
+      system_state: {
+        Row: SystemState;
+        Insert: Partial<SystemState> & Pick<SystemState, 'id'>;
+        Update: Partial<SystemState>;
+        Relationships: [];
+      };
+      tool_calls: {
+        Row: ToolCall;
+        Insert: Partial<Pick<ToolCall, 'id' | 'created_at'>> & Omit<ToolCall, 'id' | 'created_at'>;
+        Update: Partial<ToolCall>;
         Relationships: [];
       };
     };

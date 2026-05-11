@@ -2,6 +2,7 @@ import { GoogleGenAI, type Content, type FunctionDeclaration } from '@google/gen
 import { RunOutputSchema, type RunOutput } from '@loob/shared';
 import { buildToolHandlers, type ToolHandler } from './tools/index.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { insertToolCall } from '@loob/db';
 import pino from 'pino';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -17,6 +18,8 @@ export interface GeminiLoopInput {
   toolHandlers: Record<string, ToolHandler>;
   maxIterations: number;
   runId: string;
+  /** Optional — when provided, every tool call is persisted to the tool_calls table. */
+  db?: DB;
 }
 
 export interface GeminiLoopResult {
@@ -103,6 +106,7 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
       log.info({ msg: 'tool call', runId: input.runId, tool: name });
 
       const handler = input.toolHandlers[name];
+      const start = performance.now();
       let result: unknown;
 
       if (!handler) {
@@ -115,7 +119,28 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
         }
       }
 
-      log.info({ msg: 'tool result', runId: input.runId, tool: name, ok: (result as { ok?: boolean }).ok });
+      const durationMs = Math.round(performance.now() - start);
+      const resultObj = result as { ok?: boolean; data?: unknown; error?: string };
+      const okFlag = resultObj.ok === true;
+
+      log.info({ msg: 'tool result', runId: input.runId, tool: name, ok: okFlag, durationMs });
+
+      if (input.db) {
+        try {
+          await insertToolCall(input.db, {
+            run_id: input.runId,
+            tool_name: name,
+            args: args ?? {},
+            ok: okFlag,
+            result_summary: okFlag ? resultObj.data : null,
+            error: okFlag ? null : resultObj.error ?? null,
+            duration_ms: durationMs,
+          });
+        } catch (e) {
+          // Logging failures must not break the agent run.
+          log.warn({ msg: 'tool-call log persist failed', runId: input.runId, tool: name, err: String(e) });
+        }
+      }
 
       toolResultParts.push({
         functionResponse: {

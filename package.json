@@ -9,7 +9,11 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r --filter '!@loob/web' --filter '!@loob/agent' run test",
     "db:migrate": "pnpm --filter @loob/db run migrate",
     "db:migrate:local": "pnpm --filter @loob/db run migrate:local"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.9"
   }
 }

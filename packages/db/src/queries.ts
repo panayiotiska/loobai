@@ -1,7 +1,15 @@
 // Typed query helpers — wrap Supabase JS client calls with explicit return types.
 // The `db` parameter uses the SupabaseClient type from the factory (no generic needed here).
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Run, FormulaVersion, Note, Trade, AgentRequest } from './types.js';
+import type {
+  Run,
+  FormulaVersion,
+  Note,
+  Trade,
+  AgentRequest,
+  SystemState,
+  ToolCall,
+} from './types.js';
 
 // Using SupabaseClient without Database generic here keeps things simple.
 // The Row types we return are explicitly typed via the type annotations.
@@ -161,6 +169,19 @@ export async function closeTrade(
   if (error) throw new Error(`closeTrade: ${error.message}`);
 }
 
+export async function updateOpenTradePnl(
+  db: DB,
+  id: string,
+  pnlUsd: number,
+): Promise<void> {
+  const { error } = await db
+    .from('trades')
+    .update({ pnl_usd: pnlUsd })
+    .eq('id', id)
+    .eq('status', 'open');
+  if (error) throw new Error(`updateOpenTradePnl: ${error.message}`);
+}
+
 export interface PortfolioStats {
   openCount: number;
   closedCount: number;
@@ -279,4 +300,128 @@ export async function resolveAgentRequest(db: DB, id: string, resolution: string
     })
     .eq('id', id);
   if (error) throw new Error(`resolveAgentRequest: ${error.message}`);
+}
+
+// --- System state (kill switch) ---
+
+export async function getSystemState(db: DB): Promise<SystemState> {
+  const { data, error } = await db
+    .from('system_state')
+    .select()
+    .eq('id', 1)
+    .maybeSingle();
+  if (error) throw new Error(`getSystemState: ${error.message}`);
+  if (!data) {
+    // Seeded by migration; falling back to a permissive default keeps the
+    // agent running rather than crashing on a fresh / unmigrated DB.
+    return {
+      id: 1,
+      paused: false,
+      paused_at: null,
+      paused_reason: null,
+      paused_by: null,
+    };
+  }
+  return data as SystemState;
+}
+
+export async function setPausedState(
+  db: DB,
+  patch: { paused: boolean; reason: string | null; by: string },
+): Promise<SystemState> {
+  const payload = patch.paused
+    ? {
+        paused: true,
+        paused_at: new Date().toISOString(),
+        paused_reason: patch.reason,
+        paused_by: patch.by,
+      }
+    : {
+        paused: false,
+        paused_at: null,
+        paused_reason: null,
+        paused_by: patch.by,
+      };
+
+  const { data, error } = await db
+    .from('system_state')
+    .update(payload)
+    .eq('id', 1)
+    .select()
+    .single();
+  if (error) throw new Error(`setPausedState: ${error.message}`);
+  return data as SystemState;
+}
+
+// --- Tool calls (audit log) ---
+
+const ARGS_MAX_BYTES = 4_000;
+const SUMMARY_MAX_BYTES = 1_000;
+const ERROR_MAX_BYTES = 2_000;
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
+}
+
+export async function insertToolCall(
+  db: DB,
+  payload: {
+    run_id: string;
+    tool_name: string;
+    args: unknown;
+    ok: boolean;
+    result_summary: unknown;
+    error: string | null;
+    duration_ms: number;
+  },
+): Promise<void> {
+  let argsJson: unknown = null;
+  try {
+    const stringified = JSON.stringify(payload.args ?? null);
+    argsJson = stringified.length <= ARGS_MAX_BYTES
+      ? payload.args
+      : { _truncated: true, _size_bytes: stringified.length, preview: truncate(stringified, ARGS_MAX_BYTES) };
+  } catch {
+    argsJson = { _truncated: true, _reason: 'unserializable' };
+  }
+
+  const resultSummary = (() => {
+    if (payload.result_summary == null) return null;
+    try {
+      const stringified =
+        typeof payload.result_summary === 'string'
+          ? payload.result_summary
+          : JSON.stringify(payload.result_summary);
+      return truncate(stringified, SUMMARY_MAX_BYTES);
+    } catch {
+      return null;
+    }
+  })();
+
+  const { error } = await db.from('tool_calls').insert({
+    run_id: payload.run_id,
+    tool_name: payload.tool_name,
+    args_json: argsJson,
+    ok: payload.ok,
+    result_summary: resultSummary,
+    error: payload.error ? truncate(payload.error, ERROR_MAX_BYTES) : null,
+    duration_ms: payload.duration_ms,
+  });
+  if (error) throw new Error(`insertToolCall: ${error.message}`);
+}
+
+export async function getRecentToolCalls(
+  db: DB,
+  runId: string,
+  limit = 100,
+): Promise<ToolCall[]> {
+  const { data, error } = await db
+    .from('tool_calls')
+    .select()
+    .eq('run_id', runId)
+    .order('created_at', { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(`getRecentToolCalls: ${error.message}`);
+  return (data ?? []) as ToolCall[];
 }

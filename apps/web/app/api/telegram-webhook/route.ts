@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServiceClientEdge } from '@/lib/supabase-edge';
-import { insertNote, resolveAgentRequest } from '@loob/db';
+import { insertNote, resolveAgentRequest, setPausedState, getSystemState } from '@loob/db';
 import type { NextRequest } from 'next/server';
 
 interface TelegramUpdate {
@@ -54,6 +54,41 @@ export async function POST(request: NextRequest) {
     try {
       await resolveAgentRequest(db, id, resolution);
       await sendReply(chatId, `✅ Resolved request ${id.slice(0, 8)}`);
+    } catch (e) {
+      await sendReply(chatId, `❌ Error: ${String(e).slice(0, 200)}`);
+    }
+    return NextResponse.json({ ok: true });
+  }
+
+  const pauseMatch = text.match(/^\/pause(?:\s+([\s\S]+))?$/i);
+  if (pauseMatch) {
+    const reason = pauseMatch[1]?.trim() || 'manual';
+    try {
+      const state = await setPausedState(db, { paused: true, reason, by: 'telegram' });
+      await sendReply(chatId, `🛑 Agent paused — ${state.paused_reason ?? reason}`);
+    } catch (e) {
+      await sendReply(chatId, `❌ Error: ${String(e).slice(0, 200)}`);
+    }
+    return NextResponse.json({ ok: true });
+  }
+
+  if (text === '/resume') {
+    try {
+      await setPausedState(db, { paused: false, reason: null, by: 'telegram' });
+      await sendReply(chatId, '▶️ Agent resumed.');
+    } catch (e) {
+      await sendReply(chatId, `❌ Error: ${String(e).slice(0, 200)}`);
+    }
+    return NextResponse.json({ ok: true });
+  }
+
+  if (text === '/status') {
+    try {
+      const state = await getSystemState(db);
+      const msg = state.paused
+        ? `🛑 Paused since ${state.paused_at ?? '?'} — ${state.paused_reason ?? 'manual'}`
+        : '▶️ Running.';
+      await sendReply(chatId, msg);
     } catch (e) {
       await sendReply(chatId, `❌ Error: ${String(e).slice(0, 200)}`);
     }

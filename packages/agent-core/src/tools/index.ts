@@ -128,7 +128,7 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
     },
     {
       name: 'paper_trade_open',
-      description: 'Open a paper (simulated) trading position. Always include take_profit, stop_loss, time_limit, and conditions in exit_criteria.',
+      description: 'Open a paper (simulated) trading position. Always include take_profit, stop_loss, time_limit, and conditions in exit_criteria. Max position size scales as cap × confidence² — high size requires high conviction.',
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -138,6 +138,7 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
           side: { type: Type.STRING, description: '"buy", "sell", "yes", or "no"' },
           size_usd: { type: Type.NUMBER, description: 'Position size in USD' },
           thesis: { type: Type.STRING, description: 'Your reasoning for this trade' },
+          confidence: { type: Type.NUMBER, description: '0.0-1.0 conviction in THIS specific trade. Max size = cap × confidence². At 0.5 conf max is 25% of cap; at 0.8 conf max is 64% of cap. Be honest — inflating confidence to clear the bar is self-defeating.' },
           exit_criteria: {
             type: Type.OBJECT,
             description: 'Exit conditions',
@@ -297,6 +298,7 @@ export function buildToolHandlers(
         side: args.side as 'buy' | 'sell' | 'yes' | 'no',
         size_usd: Number(args.size_usd),
         thesis: String(args.thesis),
+        confidence: args.confidence != null ? Number(args.confidence) : null,
         exit_criteria: (args.exit_criteria ?? {}) as Record<string, unknown>,
       });
     },

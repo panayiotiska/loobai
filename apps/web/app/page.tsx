@@ -6,6 +6,7 @@ import {
   getOpenTrades,
   getPendingRequests,
   getPortfolioStats,
+  getSystemState,
 } from '@loob/db';
 
 export default async function LabRoomPage() {
@@ -19,11 +20,12 @@ export default async function LabRoomPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = supabase as any;
 
-  const [formulaVersions, openTrades, pendingRequests, portfolioStats] = await Promise.all([
+  const [formulaVersions, openTrades, pendingRequests, portfolioStats, systemState] = await Promise.all([
     getAllFormulaVersions(db),
     getOpenTrades(db),
     getPendingRequests(db),
     getPortfolioStats(db),
+    getSystemState(db),
   ]);
 
   const latestFormula = formulaVersions[0] ?? null;
@@ -35,6 +37,7 @@ export default async function LabRoomPage() {
       openTrades={openTrades}
       pendingRequests={pendingRequests}
       portfolioStats={portfolioStats}
+      systemState={systemState}
     />
   );
 }

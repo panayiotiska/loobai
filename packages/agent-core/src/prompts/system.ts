@@ -57,9 +57,9 @@ ${isResearch
 5. Update FORMULA.md to reflect new understanding.
 6. Emit a complete RunOutput JSON block at the end.`
   : `This is a MONITOR run. Your job is to:
-1. Check open paper positions for exit conditions (take profit, stop loss, time limit).
-2. Scan for breaking news that materially affects open positions.
-3. Close positions that meet exit criteria.
+1. Trades that hit their take_profit / stop_loss / time_limit have ALREADY been auto-closed before this run started — open positions you see below have NOT hit those triggers.
+2. Scan for breaking news or thesis-breaking developments that warrant a discretionary close even though no price trigger fired.
+3. Close positions whose thesis no longer holds.
 4. Note any urgent developments.
 5. Do NOT rewrite FORMULA.md unless a position closes and a lesson must be recorded.
 6. Emit a complete RunOutput JSON block at the end.`}
@@ -97,17 +97,19 @@ ${recentRunsSummary}
 - search_news(query): Search the web for current news and information using Gemini grounding. Always cite URLs.
 - get_crypto_price(symbol): Get current spot price and 24h change for a crypto asset (e.g. "BTC", "ETH").
 - get_crypto_ohlc(symbol, interval, lookback): Get OHLC candle data from Binance.
+- get_crypto_derivatives(symbol): Current funding rate (incl. annualized) and open interest from Binance Futures. Use BEFORE opening directional crypto trades — extreme funding or sudden OI shifts signal crowded positioning.
 - list_polymarket_markets(category?, min_volume?, max_days_to_resolution?): Browse open Polymarket prediction markets.
 - get_polymarket_market(slug): Get full details on a specific Polymarket market.
 - get_polymarket_orderbook(slug, outcome, depth?): Get live CLOB order book for one outcome (e.g. "Yes"). Use this to check liquidity, spread, and depth BEFORE sizing a Polymarket paper trade.
 - get_polymarket_price_history(slug, outcome, interval?): Historical price series for one outcome (intervals: 1m, 1h, 6h, 1d, 1w, max). Use for trend analysis and validating theses against past movement.
-- paper_trade_open(instrument_kind, instrument_id, side, size_usd, thesis, exit_criteria): Open a simulated position. Always include take_profit, stop_loss, time_limit, and conditions in exit_criteria.
+- paper_trade_open(instrument_kind, instrument_id, side, size_usd, thesis, confidence, exit_criteria): Open a simulated position. Always include take_profit, stop_loss, time_limit, and conditions in exit_criteria. Paper trades apply slippage and round-trip fees; total open notional is capped by MAX_OPEN_EXPOSURE_USD (default $10,000). Per-trade size is also capped at cap × confidence² — at 0.5 confidence max is 25% of cap; at 0.8 max is 64%. Pass an honest per-trade confidence (0.0–1.0); inflating it to clear the bar is a self-defeating behaviour we will catch in your tool-call log.
 - paper_trade_close(trade_id, reason): Close an open paper position.
 - paper_trade_list_open(): List all currently open paper positions.
 - request_user_input(kind, prompt, context?): Ask the user for input (api_key, decision, info, approval). Do NOT block waiting — note in FORMULA that you're waiting and move on.
 - propose_live_trade(...): DISABLED in v1. Calling this will throw an error.
 - read_recent_runs(limit?): Get recent run summaries.
 - read_lessons_learned(): Pull lessons learned from recent FORMULA versions.
+- get_portfolio_stats(): Quantitative performance across all paper trades — win rate, realized PnL, open exposure vs cap, biggest win/loss, and cumulative PnL curve. Use this to self-grade the formula against actual results.
 
 ## Output contract
 At the very end of your response, emit a single JSON block matching this schema exactly:

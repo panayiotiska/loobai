@@ -9,12 +9,14 @@ import {
   getPendingRequests,
   getRecentRuns,
   getUnconsumedNotes,
+  getSystemState,
   markNotesConsumed,
 } from '@loob/db';
 
 import { buildSystemPrompt } from './prompts/system.js';
 import { runGeminiLoop, buildToolHandlersForRun } from './gemini-loop.js';
 import { buildToolDeclarations } from './tools/index.js';
+import { autoCloseTriggeredTrades, markOpenTradesToMarket } from './tools/paper-trade.js';
 import { sendTelegramSummary, sendTelegramError } from './telegram.js';
 import pino from 'pino';
 
@@ -33,11 +35,40 @@ export async function runTick(kind: RunKind): Promise<void> {
 
   log.info({ msg: 'tick starting', kind });
 
+  // Kill-switch gate — checked BEFORE creating a run row so paused ticks
+  // are recorded as failed-with-reason rather than swallowed silently.
+  const state = await getSystemState(db);
+  if (state.paused) {
+    const reason = state.paused_reason ?? 'manual';
+    log.warn({ msg: 'tick aborted: agent paused', kind, reason });
+    const run = await createRun(db, kind);
+    await updateRun(db, run.id, {
+      status: 'failed',
+      finished_at: new Date().toISOString(),
+      summary: `agent paused: ${reason}`,
+      error: 'paused',
+    });
+    return;
+  }
+
   const run = await createRun(db, kind);
   log.info({ msg: 'run created', runId: run.id, kind });
 
   try {
-    // Load context
+    // Deterministic exits BEFORE the LLM looks at open positions, so trades that
+    // already hit TP/SL/time_limit are closed without depending on the agent's memory.
+    const autoClose = await autoCloseTriggeredTrades(db);
+    if (autoClose.closed.length || autoClose.errors.length) {
+      log.info({ msg: 'auto-close swept', runId: run.id, closed: autoClose.closed.length, errors: autoClose.errors.length });
+    }
+
+    // Mark remaining open trades to market so unrealized PnL on the UI and
+    // in the agent's context is the actual mark-to-market number rather than null.
+    const mtm = await markOpenTradesToMarket(db);
+    if (mtm.updated || mtm.errors.length) {
+      log.info({ msg: 'mark-to-market swept', runId: run.id, updated: mtm.updated, skipped: mtm.skipped, errors: mtm.errors.length });
+    }
+
     const [currentFormula, openTrades, pendingRequests, recentRuns, unconsumedNotes] =
       await Promise.all([
         getLatestFormula(db),
@@ -65,6 +96,7 @@ export async function runTick(kind: RunKind): Promise<void> {
       toolHandlers,
       maxIterations: MAX_ITERATIONS[kind],
       runId: run.id,
+      db,
     });
 
     const { finalJson, tokenUsage } = result;

@@ -1,7 +1,7 @@
 import type { GoogleGenAI, FunctionDeclaration } from '@google/genai';
 import { Type } from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getRecentRuns, getAllFormulaVersions } from '@loob/db';
+import { getRecentRuns, getAllFormulaVersions, getPortfolioStats } from '@loob/db';
 import { searchNews } from './news-search.js';
 import {
   getCryptoPrice,
@@ -12,6 +12,7 @@ import {
   getPolymarketPriceHistory,
   type PolymarketHistoryInterval,
 } from './market-data.js';
+import { getCryptoDerivatives } from './derivatives.js';
 import { paperTradeOpen, paperTradeClose, paperTradeListOpen } from './paper-trade.js';
 import { requestUserInput } from './request-user-input.js';
 import { proposeLiveTrade } from './propose-live-trade.js';
@@ -62,6 +63,17 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
           lookback: { type: Type.NUMBER, description: 'Number of candles to return (max 500)' },
         },
         required: ['symbol', 'interval', 'lookback'],
+      },
+    },
+    {
+      name: 'get_crypto_derivatives',
+      description: 'Get current funding rate, annualized funding, and open interest for a crypto perp from Binance Futures. Use BEFORE opening directional crypto trades — extreme funding or OI shifts signal crowded positioning.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          symbol: { type: Type.STRING, description: 'Ticker symbol, e.g. "BTC", "ETH", "SOL"' },
+        },
+        required: ['symbol'],
       },
     },
     {
@@ -116,7 +128,7 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
     },
     {
       name: 'paper_trade_open',
-      description: 'Open a paper (simulated) trading position. Always include take_profit, stop_loss, time_limit, and conditions in exit_criteria.',
+      description: 'Open a paper (simulated) trading position. Always include take_profit, stop_loss, time_limit, and conditions in exit_criteria. Max position size scales as cap × confidence² — high size requires high conviction.',
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -126,6 +138,7 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
           side: { type: Type.STRING, description: '"buy", "sell", "yes", or "no"' },
           size_usd: { type: Type.NUMBER, description: 'Position size in USD' },
           thesis: { type: Type.STRING, description: 'Your reasoning for this trade' },
+          confidence: { type: Type.NUMBER, description: '0.0-1.0 conviction in THIS specific trade. Max size = cap × confidence². At 0.5 conf max is 25% of cap; at 0.8 conf max is 64% of cap. Be honest — inflating confidence to clear the bar is self-defeating.' },
           exit_criteria: {
             type: Type.OBJECT,
             description: 'Exit conditions',
@@ -209,6 +222,15 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
         required: [],
       },
     },
+    {
+      name: 'get_portfolio_stats',
+      description: 'Get quantitative performance stats across all paper trades: win rate, realized PnL, open exposure, biggest win/loss, plus the cumulative PnL curve. Use this to self-grade the current formula against actual results.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {},
+        required: [],
+      },
+    },
   ];
 }
 
@@ -232,6 +254,10 @@ export function buildToolHandlers(
         String(args.interval),
         Number(args.lookback),
       );
+    },
+
+    get_crypto_derivatives: async (args) => {
+      return getCryptoDerivatives(String(args.symbol));
     },
 
     list_polymarket_markets: async (args) => {
@@ -272,6 +298,7 @@ export function buildToolHandlers(
         side: args.side as 'buy' | 'sell' | 'yes' | 'no',
         size_usd: Number(args.size_usd),
         thesis: String(args.thesis),
+        confidence: args.confidence != null ? Number(args.confidence) : null,
         exit_criteria: (args.exit_criteria ?? {}) as Record<string, unknown>,
       });
     },
@@ -330,6 +357,16 @@ export function buildToolHandlers(
           .filter(Boolean)
           .slice(0, 10);
         return { ok: true, data: lessons.join('\n\n') || 'No lessons recorded yet.' };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+
+    get_portfolio_stats: async () => {
+      try {
+        const stats = await getPortfolioStats(db);
+        // Trim the curve in the tool response — agent doesn't need every point
+        return { ok: true, data: { ...stats, pnlCurve: stats.pnlCurve.slice(-30) } };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }

@@ -14,13 +14,16 @@ import {
   Magician,
 } from './game/objects';
 import type { ModalName } from './game/objects';
-import type { FormulaVersion, Trade, AgentRequest } from '@loob/db';
+import type { FormulaVersion, Trade, AgentRequest, PortfolioStats, SystemState } from '@loob/db';
+import { PortfolioPanel } from './portfolio-visuals';
 
 interface LabRoomProps {
   latestFormula: FormulaVersion | null;
   formulaVersions: FormulaVersion[];
   openTrades: Trade[];
   pendingRequests: AgentRequest[];
+  portfolioStats: PortfolioStats;
+  systemState: SystemState;
 }
 
 export function LabRoom({
@@ -28,6 +31,8 @@ export function LabRoom({
   formulaVersions,
   openTrades,
   pendingRequests,
+  portfolioStats,
+  systemState,
 }: LabRoomProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -98,6 +103,14 @@ export function LabRoom({
       style={{ cursor: 'crosshair', background: '#1a3a1a' }}
       onClick={handleWorldClick}
     >
+      {systemState.paused && (
+        <div
+          className="absolute top-0 left-0 right-0 z-40 bg-red-700/90 text-white text-center py-1.5 font-mono text-sm shadow-md pointer-events-none"
+        >
+          🛑 AGENT PAUSED — {systemState.paused_reason ?? 'manual'} · use Telegram /resume to unpause
+        </div>
+      )}
+
       {/* ── Grass ground ── */}
       <div
         style={{
@@ -123,6 +136,8 @@ export function LabRoom({
       <BulletinBoard
         onActivate={handleObjectClick}
         pendingCount={pendingRequests.length}
+        realizedPnlUsd={portfolioStats.realizedPnlUsd}
+        winRate={portfolioStats.winRate}
       />
       <DeskComputer onActivate={handleObjectClick} />
       <Chalkboard
@@ -167,7 +182,7 @@ export function LabRoom({
         >
           <div className="absolute inset-0 bg-black/70" />
           <div
-            className="relative bg-lab-wall border border-lab-dim rounded-lg shadow-2xl w-full max-w-lg max-h-[80vh] overflow-y-auto p-6 z-10"
+            className="relative bg-lab-wall border border-lab-dim rounded-lg shadow-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto p-6 z-10"
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -176,7 +191,10 @@ export function LabRoom({
             >
               ✕
             </button>
-            <h2 className="text-lab-glow font-bold text-lg mb-4">Pending requests</h2>
+            <h2 className="text-lab-glow font-bold text-lg mb-3">Performance</h2>
+            <PortfolioPanel stats={portfolioStats} />
+
+            <h2 className="text-lab-glow font-bold text-lg mb-3 mt-6">Pending requests</h2>
             {pendingRequests.length === 0 ? (
               <p className="text-lab-dim text-sm">No pending requests from Loob.</p>
             ) : (

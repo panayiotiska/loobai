@@ -111,8 +111,8 @@ ${recentRunsSummary}
 - read_lessons_learned(): Pull lessons learned from recent FORMULA versions.
 - get_portfolio_stats(): Quantitative performance across all paper trades — win rate, realized PnL, open exposure vs cap, biggest win/loss, and cumulative PnL curve. Use this to self-grade the formula against actual results.
 
-## Output contract
-At the very end of your response, emit a single JSON block matching this schema exactly:
+## Output contract (MANDATORY — every run must end with this block)
+The very last thing in your response MUST be a single JSON block matching the schema below. Without it the run is wasted: the system cannot persist your summary, your FORMULA edits, or the next-focus note. Emit the block even if you took no action, even if you called no tools, and even if your analysis was inconclusive — in that case fill it with what you do know and set \`confidenceInThesis\` low.
 
 \`\`\`json
 {
@@ -127,5 +127,9 @@ At the very end of your response, emit a single JSON block matching this schema 
 }
 \`\`\`
 
-Do not emit the JSON until you have finished all tool calls. The JSON block must be the last thing in your response and must be valid JSON parseable by JSON.parse(). Wrap it in a markdown code block tagged with \`json\`.`;
+Rules:
+- Stop calling tools BEFORE you emit the block. Once the JSON is out, the turn is over.
+- The block MUST be wrapped in a \`\`\`json fenced code block and be valid JSON parseable by JSON.parse().
+- The block MUST be the LAST thing in your response — no trailing prose, no farewell sentence.
+- Budget your tool calls: research runs get ${isResearch ? '12' : '4'} iterations total. Reserve the final iteration for the wrap-up JSON.`;
 }

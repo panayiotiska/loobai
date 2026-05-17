@@ -1,7 +1,7 @@
 import type { GoogleGenAI, FunctionDeclaration } from '@google/genai';
 import { Type } from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getRecentRuns, getAllFormulaVersions, getPortfolioStats } from '@loob/db';
+import { getRecentRuns, getAllFormulaVersions, getPortfolioStats, getToolHealth } from '@loob/db';
 import { searchNews } from './news-search.js';
 import {
   getCryptoPrice,
@@ -339,8 +339,15 @@ export function buildToolHandlers(
 
     read_recent_runs: async (args) => {
       try {
-        const runs = await getRecentRuns(db, args.limit ? Number(args.limit) : 10);
-        return { ok: true, data: runs };
+        const limit = args.limit ? Number(args.limit) : 10;
+        const [runs, toolHealth] = await Promise.all([
+          getRecentRuns(db, limit),
+          getToolHealth(db, Math.max(limit, 20)),
+        ]);
+        // Only surface tools that have failed at least once in the lookback so the agent
+        // can see "is this tool currently broken or fine" without noise from healthy tools.
+        const flakyTools = toolHealth.filter((t) => t.failures > 0);
+        return { ok: true, data: { runs, toolHealth: flakyTools } };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }

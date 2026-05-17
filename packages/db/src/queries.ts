@@ -411,6 +411,51 @@ export async function insertToolCall(
   if (error) throw new Error(`insertToolCall: ${error.message}`);
 }
 
+export interface ToolHealthEntry {
+  tool_name: string;
+  total: number;
+  failures: number;
+  failureRate: number;
+  lastError: string | null;
+}
+
+// Aggregate per-tool success/failure counts across the most recent runs so the agent
+// can see which tools are currently broken and steer around them.
+export async function getToolHealth(db: DB, lookbackRuns = 20): Promise<ToolHealthEntry[]> {
+  const recent = await getRecentRuns(db, lookbackRuns);
+  if (recent.length === 0) return [];
+  const ids = recent.map((r) => r.id);
+
+  const { data, error } = await db
+    .from('tool_calls')
+    .select('tool_name, ok, error, created_at')
+    .in('run_id', ids)
+    .order('created_at', { ascending: false })
+    .limit(2000);
+  if (error) throw new Error(`getToolHealth: ${error.message}`);
+
+  const buckets = new Map<string, { total: number; failures: number; lastError: string | null }>();
+  for (const row of (data ?? []) as Array<{ tool_name: string; ok: boolean; error: string | null }>) {
+    const b = buckets.get(row.tool_name) ?? { total: 0, failures: 0, lastError: null };
+    b.total += 1;
+    if (!row.ok) {
+      b.failures += 1;
+      if (!b.lastError && row.error) b.lastError = row.error.slice(0, 200);
+    }
+    buckets.set(row.tool_name, b);
+  }
+
+  return Array.from(buckets.entries())
+    .map(([tool_name, b]) => ({
+      tool_name,
+      total: b.total,
+      failures: b.failures,
+      failureRate: b.total > 0 ? b.failures / b.total : 0,
+      lastError: b.lastError,
+    }))
+    .sort((a, b) => b.failureRate - a.failureRate);
+}
+
 export async function getRecentToolCalls(
   db: DB,
   runId: string,

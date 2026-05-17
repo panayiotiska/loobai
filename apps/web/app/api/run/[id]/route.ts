@@ -23,10 +23,20 @@ export async function GET(
     return NextResponse.json({ error: 'Run not found' }, { status: 404 });
   }
 
-  const [{ data: formulaVersion }, { data: trades }] = await Promise.all([
+  const [{ data: formulaVersion }, { data: trades }, { data: toolCalls }] = await Promise.all([
     supabase.from('formula_versions').select().eq('run_id', params.id).maybeSingle(),
     supabase.from('trades').select().eq('run_id', params.id),
+    supabase
+      .from('tool_calls')
+      .select()
+      .eq('run_id', params.id)
+      .order('created_at', { ascending: true }),
   ]);
 
-  return NextResponse.json({ run, formulaVersion, trades: trades ?? [] });
+  return NextResponse.json({
+    run,
+    formulaVersion,
+    trades: trades ?? [],
+    toolCalls: toolCalls ?? [],
+  });
 }

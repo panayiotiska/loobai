@@ -64,8 +64,17 @@ export async function sendTelegramSummary(input: TelegramSummaryInput): Promise<
   await sendTelegramMessage(message);
 }
 
-export async function sendTelegramError(runId: string, error: unknown): Promise<void> {
+export async function sendTelegramError(
+  runId: string,
+  error: unknown,
+  opts?: { consecutiveFailures?: number },
+): Promise<void> {
+  const banner =
+    opts?.consecutiveFailures && opts.consecutiveFailures >= 3
+      ? `⚠️ <b>${opts.consecutiveFailures + 1}th consecutive failure of this kind</b>\n`
+      : '';
   const message =
+    banner +
     `🚨 <b>Loob run failed</b>\n` +
     `<code>${runId.slice(0, 8)}</code>\n\n` +
     `<code>${String(error).slice(0, 500)}</code>`;

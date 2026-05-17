@@ -73,7 +73,9 @@ ${isResearch
 
 ## FORMULA.md
 Your evolving strategy document. The current version (v${currentFormula?.version ?? 0}) is provided below.
-${isResearch ? 'You MUST emit an updated version at the end of this run (even minor updates count).' : 'Only update if a position closes or a critical lesson emerges.'}
+${isResearch
+  ? `Update FORMULA only when warranted. A new version REQUIRES the changelog to cite at least one of: (a) a specific closed trade outcome, (b) a concrete finding from a tool call this run, or (c) a user note. "General refinement" or "added hypothesis H_n" without supporting evidence is NOT a valid reason — leave the formula unchanged in that case. Stability beats churn.`
+  : 'Do NOT emit a new formula unless a position closed this run AND a clear lesson must be recorded. Default: omit newFormula entirely.'}
 
 Current FORMULA (v${currentFormula?.version ?? 0}):
 \`\`\`markdown
@@ -96,8 +98,8 @@ ${recentRunsSummary}
 ## Available tools
 - search_news(query): Search the web for current news and information using Gemini grounding. Always cite URLs.
 - get_crypto_price(symbol): Get current spot price and 24h change for a crypto asset (e.g. "BTC", "ETH").
-- get_crypto_ohlc(symbol, interval, lookback): Get OHLC candle data for a USDT spot pair.
-- get_crypto_derivatives(symbol): Current funding rate (incl. annualized) and open interest for a USDT-margined perp. Use BEFORE opening directional crypto trades — extreme funding or sudden OI shifts signal crowded positioning.
+- get_crypto_ohlc(symbol, interval, lookback): Get OHLC candle data for a USDT spot pair (via data-api.binance.vision, geoblock-free).
+- get_crypto_derivatives(symbol): Current funding rate (incl. annualized) and open interest for a USDT-margined perp from OKX (primary) or Deribit (fallback). Use BEFORE opening directional crypto trades — extreme funding or sudden OI shifts signal crowded positioning.
 - list_polymarket_markets(category?, min_volume?, max_days_to_resolution?): Browse open Polymarket prediction markets.
 - get_polymarket_market(slug): Get full details on a specific Polymarket market.
 - get_polymarket_orderbook(slug, outcome, depth?): Get live CLOB order book for one outcome (e.g. "Yes"). Use this to check liquidity, spread, and depth BEFORE sizing a Polymarket paper trade.
@@ -107,7 +109,7 @@ ${recentRunsSummary}
 - paper_trade_list_open(): List all currently open paper positions.
 - request_user_input(kind, prompt, context?): Ask the user for input (api_key, decision, info, approval). Do NOT block waiting — note in FORMULA that you're waiting and move on.
 - propose_live_trade(...): DISABLED in v1. Calling this will throw an error.
-- read_recent_runs(limit?): Get recent run summaries.
+- read_recent_runs(limit?): Get recent run summaries AND a toolHealth list of which tools have been failing recently — use it to avoid tools that are currently broken (and report repeated failures in your summary).
 - read_lessons_learned(): Pull lessons learned from recent FORMULA versions.
 - get_portfolio_stats(): Quantitative performance across all paper trades — win rate, realized PnL, open exposure vs cap, biggest win/loss, and cumulative PnL curve. Use this to self-grade the formula against actual results.
 
@@ -116,16 +118,26 @@ At the very end of your response, emit a single JSON block matching this schema 
 
 \`\`\`json
 {
-  "summary": "string (max 2000 chars) — human-readable TL;DR for Telegram",
-  "newFormula": "string | undefined — full updated markdown if FORMULA changed",
-  "formulaChangelog": "string | undefined — required if newFormula present",
-  "paperTradesOpened": ["uuid", ...],
-  "paperTradesClosed": ["uuid", ...],
-  "agentRequestsCreated": ["uuid", ...],
+  "summary": "human-readable TL;DR for Telegram (max 2000 chars)",
+  "newFormula": "full updated markdown — OMIT THIS FIELD ENTIRELY if FORMULA did not change",
+  "formulaChangelog": "required only when newFormula is present, otherwise OMIT",
+  "paperTradesOpened": [],
+  "paperTradesClosed": [],
+  "agentRequestsCreated": [],
   "confidenceInThesis": 0.0,
-  "nextRunFocus": "string (max 500 chars)"
+  "nextRunFocus": "max 500 chars"
 }
 \`\`\`
 
-Do not emit the JSON until you have finished all tool calls. The JSON block must be the last thing in your response and must be valid JSON parseable by JSON.parse(). Wrap it in a markdown code block tagged with \`json\`.`;
+JSON rules — read carefully, these have been a persistent failure mode:
+- The block MUST be valid JSON parseable by JSON.parse(). No comments, no trailing commas.
+- NEVER write \`undefined\` as a value. If a field is not applicable, OMIT it from the object entirely (or use \`null\` for array/string fields where omission is awkward).
+- All strings must use straight double quotes \`"\`, not smart/curly quotes.
+- Multi-line strings inside JSON must use \`\\n\` escape sequences, not raw newlines.
+- The fenced \`\`\`json block must be the LAST thing in your response. No prose after it.
+
+Minimal valid example (no formula change, no trades):
+\`\`\`json
+{"summary":"Quiet tick — no new opportunities and no theses broken.","paperTradesOpened":[],"paperTradesClosed":[],"agentRequestsCreated":[],"confidenceInThesis":0.4,"nextRunFocus":"Re-check BTC funding and SOL OI in 4h."}
+\`\`\``;
 }

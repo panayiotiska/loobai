@@ -24,7 +24,67 @@ const COINGECKO_SYMBOL_MAP: Record<string, string> = {
   AVAX: 'avalanche-2',
   MATIC: 'matic-network',
   DOT: 'polkadot',
+  // Symbols observed missing in prod tool_calls logs:
+  HYPE: 'hyperliquid',
+  RON: 'ronin',
+  ARB: 'arbitrum',
+  STRK: 'starknet',
+  SUI: 'sui',
+  APT: 'aptos',
+  TIA: 'celestia',
+  SEI: 'sei-network',
+  PEPE: 'pepe',
+  WIF: 'dogwifcoin',
+  BONK: 'bonk',
+  LINK: 'chainlink',
+  UNI: 'uniswap',
+  TON: 'the-open-network',
+  TRX: 'tron',
+  LTC: 'litecoin',
+  ATOM: 'cosmos',
+  NEAR: 'near',
+  OP: 'optimism',
+  INJ: 'injective-protocol',
+  RNDR: 'render-token',
+  FET: 'fetch-ai',
+  ICP: 'internet-computer',
 };
+
+// In-memory resolution cache for symbols not in the static map.
+const resolvedIdCache = new Map<string, string>();
+
+async function resolveCoingeckoId(symbol: string): Promise<string | null> {
+  const upper = symbol.toUpperCase();
+  if (COINGECKO_SYMBOL_MAP[upper]) return COINGECKO_SYMBOL_MAP[upper];
+  if (resolvedIdCache.has(upper)) return resolvedIdCache.get(upper) ?? null;
+
+  try {
+    const res = await fetch(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(symbol)}`);
+    if (!res.ok) return null;
+    const json = (await res.json()) as { coins?: Array<{ id: string; symbol: string; market_cap_rank: number | null }> };
+    const candidates = (json.coins ?? []).filter((c) => c.symbol.toUpperCase() === upper);
+    // Prefer highest-ranked (lowest market_cap_rank number) when multiple coins share a ticker.
+    candidates.sort(
+      (a, b) => (a.market_cap_rank ?? Number.MAX_SAFE_INTEGER) - (b.market_cap_rank ?? Number.MAX_SAFE_INTEGER),
+    );
+    const id = candidates[0]?.id ?? null;
+    if (id) resolvedIdCache.set(upper, id);
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCoinGeckoMarkets(coinId: string): Promise<Response> {
+  const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${coinId}&price_change_percentage=24h`;
+  const res = await fetch(url);
+  if (res.status === 429) {
+    // One backoff then retry — CoinGecko's free tier is bursty.
+    await new Promise((r) => setTimeout(r, 5000));
+    return fetch(url);
+  }
+  return res;
+}
 
 export async function getCryptoPrice(symbol: string): Promise<Result<CryptoPriceResult>> {
   const upper = symbol.toUpperCase();
@@ -33,14 +93,14 @@ export async function getCryptoPrice(symbol: string): Promise<Result<CryptoPrice
     return ok(cached.data);
   }
 
-  const coinId = COINGECKO_SYMBOL_MAP[upper] ?? upper.toLowerCase();
+  let coinId = await resolveCoingeckoId(upper);
+  if (!coinId) coinId = upper.toLowerCase();
+
   try {
-    const res = await fetch(
-      `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${coinId}&price_change_percentage=24h`,
-    );
+    const res = await fetchCoinGeckoMarkets(coinId);
     if (!res.ok) return err(`CoinGecko error: ${res.status} ${res.statusText}`);
 
-    const json = await res.json() as Array<{
+    const json = (await res.json()) as Array<{
       symbol: string;
       current_price: number;
       price_change_percentage_24h: number;
@@ -48,7 +108,9 @@ export async function getCryptoPrice(symbol: string): Promise<Result<CryptoPrice
       total_volume: number;
     }>;
 
-    if (!json.length) return err(`No data found for symbol: ${symbol}`);
+    if (!json.length) {
+      return err(`No data found for symbol: ${symbol} (tried coingecko id "${coinId}"). If this is a real asset, add it to COINGECKO_SYMBOL_MAP.`);
+    }
 
     const coin = json[0];
     const data: CryptoPriceResult = {

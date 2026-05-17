@@ -108,7 +108,7 @@ export async function runTick(kind: RunKind): Promise<void> {
       db,
     });
 
-    const { tokenUsage } = result;
+    const { tokenUsage, costUsd } = result;
     finalJson = result.finalJson;
 
     // Persist new formula version if agent updated it
@@ -138,6 +138,7 @@ export async function runTick(kind: RunKind): Promise<void> {
       summary: finalJson.summary,
       llm_input_tokens: tokenUsage.input,
       llm_output_tokens: tokenUsage.output,
+      llm_cost_usd: costUsd,
     });
 
     log.info({ msg: 'run success', runId: run.id, kind });
@@ -150,7 +151,22 @@ export async function runTick(kind: RunKind): Promise<void> {
       error: err instanceof Error ? `${err.message}\n${err.stack}` : String(err),
     });
 
-    await sendTelegramError(run.id, err);
+    // Count consecutive prior failures of the same kind so Telegram can shout louder.
+    // Exclude the run we just marked failed; we want the streak BEFORE this run.
+    let consecutiveFailures = 0;
+    try {
+      const recent = await getRecentRuns(db, 10);
+      for (const r of recent) {
+        if (r.id === run.id) continue;
+        if (r.kind !== kind) continue;
+        if (r.status === 'failed') consecutiveFailures += 1;
+        else break;
+      }
+    } catch (e) {
+      log.warn({ msg: 'consecutive-failure count failed', err: String(e) });
+    }
+
+    await sendTelegramError(run.id, err, { consecutiveFailures });
     throw err;
   }
 

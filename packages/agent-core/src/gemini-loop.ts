@@ -221,6 +221,54 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
     history.push({ role: 'user', parts: toolResultParts });
   }
 
+  // If the iteration loop exhausted while the agent was still calling tools,
+  // it never got a turn to write its summary JSON. Force one no-tool wrap-up
+  // call so we get a real RunOutput instead of the empty-text fallback.
+  const hasJsonBlock = /```json\s*[\s\S]*?```/.test(finalText);
+  if (!hasJsonBlock) {
+    log.info({ msg: 'forcing wrap-up call — no JSON block emitted during loop', runId: input.runId });
+    history.push({
+      role: 'user',
+      parts: [
+        {
+          text: 'Iteration budget reached. Do NOT call any more tools. Using only the information you already gathered, emit the final RunOutput JSON block now per the system prompt. The fenced ```json block must be the last thing in your response.',
+        },
+      ],
+    });
+
+    let wrapupResponse;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        wrapupResponse = await genai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: history,
+          config: {
+            systemInstruction: input.systemPrompt,
+            // No tools — force a text-only response.
+            temperature: 0.3,
+          },
+        });
+        break;
+      } catch (e) {
+        const status = (e as { status?: number }).status;
+        if ((status === 503 || status === 500 || status === 429) && attempt < 2) {
+          await new Promise((r) => setTimeout(r, (attempt + 1) * 15000));
+        } else {
+          throw e;
+        }
+      }
+    }
+    if (wrapupResponse) {
+      totalInputTokens += wrapupResponse.usageMetadata?.promptTokenCount ?? 0;
+      totalOutputTokens += wrapupResponse.usageMetadata?.candidatesTokenCount ?? 0;
+      const wrapupText = (wrapupResponse.candidates?.[0]?.content?.parts ?? [])
+        .filter((p) => p.text)
+        .map((p) => p.text ?? '')
+        .join('');
+      if (wrapupText) finalText = wrapupText;
+    }
+  }
+
   const finalJson = parseRunOutput(finalText);
 
   return {

@@ -1,5 +1,5 @@
 import { GoogleGenAI, type Content, type FunctionDeclaration } from '@google/genai';
-import { RunOutputSchema, type RunOutput } from '@loob/shared';
+import { type RunOutput } from '@loob/shared';
 import { buildToolHandlers, type ToolHandler } from './tools/index.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { insertToolCall } from '@loob/db';
@@ -304,65 +304,100 @@ export function sanitizeJsonBlock(raw: string): string {
 }
 
 // Cheap "did the agent emit something parseable" check used to decide whether
-// to fire the wrap-up turn. Mirrors parseRunOutput's strict path so we don't
-// re-trigger wrap-up on output that parseRunOutput would already accept.
+// to fire the wrap-up turn. Uses coerceToRunOutput so we don't re-fire wrap-up
+// on outputs parseRunOutput would already salvage.
 function hasParseableJsonBlock(text: string): boolean {
   const m = text.match(/```json\s*([\s\S]*?)```\s*$/);
   if (!m) return false;
   try {
     const parsed = JSON.parse(sanitizeJsonBlock(m[1]));
-    RunOutputSchema.parse(parsed);
-    return true;
+    return coerceToRunOutput(parsed) !== null;
   } catch {
     return false;
   }
 }
 
-function parseRunOutput(text: string): RunOutput {
-  const jsonBlockMatch = text.match(/```json\s*([\s\S]*?)```\s*$/);
-  if (jsonBlockMatch) {
-    const raw = sanitizeJsonBlock(jsonBlockMatch[1]);
+// Coerce a loosely-parsed object into the RunOutput shape, discarding any field
+// the agent got wrong rather than failing the whole parse. Strict validation
+// over a 5000-token analysis because one array contained objects instead of
+// UUID strings is exactly the kind of failure mode we want to engineer around.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function coerceToRunOutput(parsed: any): RunOutput | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  const summary = typeof parsed.summary === 'string' ? parsed.summary.slice(0, 2000) : null;
+  if (!summary) return null;
+
+  const confidenceRaw = Number(parsed.confidenceInThesis);
+  const confidence = Number.isFinite(confidenceRaw) ? Math.min(1, Math.max(0, confidenceRaw)) : 0.5;
+
+  const nextRunFocus =
+    typeof parsed.nextRunFocus === 'string' ? parsed.nextRunFocus.slice(0, 500) : 'No focus emitted.';
+
+  // Array fields must be arrays of UUID strings. Anything else → drop to [].
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const coerceUuidArray = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && uuidRe.test(x)) : [];
+
+  const newFormula = typeof parsed.newFormula === 'string' && parsed.newFormula.length > 0 ? parsed.newFormula : undefined;
+  const formulaChangelog =
+    newFormula && typeof parsed.formulaChangelog === 'string' ? parsed.formulaChangelog : undefined;
+
+  return {
+    summary,
+    newFormula,
+    formulaChangelog,
+    paperTradesOpened: coerceUuidArray(parsed.paperTradesOpened),
+    paperTradesClosed: coerceUuidArray(parsed.paperTradesClosed),
+    agentRequestsCreated: coerceUuidArray(parsed.agentRequestsCreated),
+    confidenceInThesis: confidence,
+    nextRunFocus,
+  };
+}
+
+export function parseRunOutput(text: string): RunOutput {
+  // Try every plausible JSON location, in order of preference, and accept the
+  // first one that parses + has a usable summary. Strict validation lives
+  // in coerceToRunOutput which salvages bad sub-fields without dropping the run.
+  const candidates: string[] = [];
+  const fencedAtEnd = text.match(/```json\s*([\s\S]*?)```\s*$/);
+  if (fencedAtEnd) candidates.push(fencedAtEnd[1]);
+  // Any fenced json block anywhere (in case the agent appended prose after).
+  for (const m of text.matchAll(/```json\s*([\s\S]*?)```/g)) candidates.push(m[1]);
+  // Bare JSON object containing summary + confidenceInThesis.
+  const bare = text.match(/\{[\s\S]*?"summary"[\s\S]*?"confidenceInThesis"[\s\S]*?\}/);
+  if (bare) candidates.push(bare[0]);
+
+  for (const candidate of candidates) {
     try {
-      const parsed = JSON.parse(raw);
-      // If the agent wrote a changelog but no formula, downgrade to a no-op rather than fail.
-      if (parsed && typeof parsed === 'object' && parsed.formulaChangelog && !parsed.newFormula) {
-        log.warn({ msg: 'changelog without newFormula — dropping changelog', changelog: String(parsed.formulaChangelog).slice(0, 120) });
-        delete parsed.formulaChangelog;
-      }
-      return RunOutputSchema.parse(parsed);
-    } catch (e) {
-      // Never throw — log and fall through to the synthesized-summary fallback.
-      // A run that produced real tool calls and prose is more useful than a failed-run row.
-      log.warn(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { msg: 'RunOutput JSON block found but unparseable — falling back', err: (e as any)?.message, raw_preview: raw.slice(0, 400) } as any,
-      );
+      const parsed = JSON.parse(sanitizeJsonBlock(candidate));
+      const coerced = coerceToRunOutput(parsed);
+      if (coerced) return coerced;
+    } catch {
+      /* try next candidate */
     }
   }
 
-  // Fallback: try to find any JSON object containing the required fields
-  const jsonMatch = text.match(/\{[\s\S]*"summary"[\s\S]*"confidenceInThesis"[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(sanitizeJsonBlock(jsonMatch[0]));
-      return RunOutputSchema.parse(parsed);
-    } catch {}
-  }
-
-  // No usable JSON anywhere. Don't drop the run — surface a preview of what
-  // the agent did write so the Telegram/UI message still carries signal.
+  // No usable JSON at all. Build a synthesized summary from the prose. Keep
+  // code-block CONTENTS this time (just strip the fence markers) so a response
+  // that's entirely inside fences still surfaces its text.
   const preview = text
-    .replace(/```[\s\S]*?```/g, '')
+    .replace(/```(?:json|markdown|md)?\s*/g, '')
+    .replace(/```/g, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 600);
-  return RunOutputSchema.parse({
+    .slice(0, 1500);
+  log.warn({ msg: 'no usable RunOutput JSON found — using synthesized prose summary', preview_len: preview.length, raw_len: text.length });
+  return {
     summary: preview
-      ? `[no valid JSON emitted by agent — synthesized fallback] ${preview}`
-      : `Agent completed but emitted no usable text or JSON. Raw length: ${text.length}.`,
-    confidenceInThesis: 0,
+      ? `[synthesized from agent prose — JSON emit failed] ${preview}`
+      : `Agent completed but emitted neither valid JSON nor any text. Raw length: ${text.length}.`,
+    paperTradesOpened: [],
+    paperTradesClosed: [],
+    agentRequestsCreated: [],
+    confidenceInThesis: 0.3,
     nextRunFocus: 'Investigate: agent failed to emit a parseable RunOutput JSON block.',
-  });
+  };
 }
 
 export function createGeminiClient(): GoogleGenAI {

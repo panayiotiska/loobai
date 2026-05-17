@@ -224,14 +224,23 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
   // If the iteration loop exhausted while the agent was still calling tools,
   // it never got a turn to write its summary JSON. Force one no-tool wrap-up
   // call so we get a real RunOutput instead of the empty-text fallback.
-  const hasJsonBlock = /```json\s*[\s\S]*?```/.test(finalText);
-  if (!hasJsonBlock) {
-    log.info({ msg: 'forcing wrap-up call — no JSON block emitted during loop', runId: input.runId });
+  //
+  // The check actually attempts a parse: a loose regex check was fooled when
+  // the agent's response contained quoted backticks from echoing the prompt.
+  if (!hasParseableJsonBlock(finalText)) {
+    log.info({ msg: 'forcing wrap-up call — no parseable JSON block in agent output', runId: input.runId });
+    // The directive intentionally avoids triple-backtick characters so the
+    // model can't accidentally echo them back into its response and confuse
+    // the parser. We describe the fence by name only.
     history.push({
       role: 'user',
       parts: [
         {
-          text: 'Iteration budget reached. Do NOT call any more tools. Using only the information you already gathered, emit the final RunOutput JSON block now per the system prompt. The fenced ```json block must be the last thing in your response.',
+          text:
+            'Iteration budget reached. Stop calling tools. ' +
+            'Now write ONLY one valid JSON object matching the RunOutput schema described in the system prompt. ' +
+            'Wrap it in a fenced json code block (open fence is three backticks immediately followed by the lowercase word json on the same line; close fence is three backticks on a line by itself). ' +
+            'Nothing else after the close fence. No prose, no markdown headers, no analysis — just the fenced JSON block.',
         },
       ],
     });
@@ -294,6 +303,21 @@ export function sanitizeJsonBlock(raw: string): string {
   );
 }
 
+// Cheap "did the agent emit something parseable" check used to decide whether
+// to fire the wrap-up turn. Mirrors parseRunOutput's strict path so we don't
+// re-trigger wrap-up on output that parseRunOutput would already accept.
+function hasParseableJsonBlock(text: string): boolean {
+  const m = text.match(/```json\s*([\s\S]*?)```\s*$/);
+  if (!m) return false;
+  try {
+    const parsed = JSON.parse(sanitizeJsonBlock(m[1]));
+    RunOutputSchema.parse(parsed);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function parseRunOutput(text: string): RunOutput {
   const jsonBlockMatch = text.match(/```json\s*([\s\S]*?)```\s*$/);
   if (jsonBlockMatch) {
@@ -307,8 +331,11 @@ function parseRunOutput(text: string): RunOutput {
       }
       return RunOutputSchema.parse(parsed);
     } catch (e) {
-      throw new Error(
-        `Failed to parse RunOutput JSON block: ${e instanceof Error ? e.message : String(e)} | raw_preview=${raw.slice(0, 400)}`,
+      // Never throw — log and fall through to the synthesized-summary fallback.
+      // A run that produced real tool calls and prose is more useful than a failed-run row.
+      log.warn(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { msg: 'RunOutput JSON block found but unparseable — falling back', err: (e as any)?.message, raw_preview: raw.slice(0, 400) } as any,
       );
     }
   }
@@ -322,10 +349,19 @@ function parseRunOutput(text: string): RunOutput {
     } catch {}
   }
 
+  // No usable JSON anywhere. Don't drop the run — surface a preview of what
+  // the agent did write so the Telegram/UI message still carries signal.
+  const preview = text
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 600);
   return RunOutputSchema.parse({
-    summary: `Agent completed but did not emit a valid JSON output block. Raw text length: ${text.length}`,
+    summary: preview
+      ? `[no valid JSON emitted by agent — synthesized fallback] ${preview}`
+      : `Agent completed but emitted no usable text or JSON. Raw length: ${text.length}.`,
     confidenceInThesis: 0,
-    nextRunFocus: 'Debug: agent must emit RunOutput JSON block at the end of response',
+    nextRunFocus: 'Investigate: agent failed to emit a parseable RunOutput JSON block.',
   });
 }
 

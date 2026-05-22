@@ -28,6 +28,14 @@ function tradeFixture(overrides: Partial<Trade> = {}): Trade {
     confidence: 0.8,
     opened_at: new Date().toISOString(),
     closed_at: null,
+    regime_at_entry: null,
+    retail_view: null,
+    institutional_view: null,
+    adversarial_view: null,
+    confirming_signals: null,
+    invalidation_signal: null,
+    expected_holding_period: null,
+    postmortem: null,
     ...overrides,
   };
 }

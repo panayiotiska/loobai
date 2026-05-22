@@ -47,6 +47,22 @@ export interface Trade {
   confidence: number | null;
   opened_at: string;
   closed_at: string | null;
+  // 0003: structured rationale & postmortems
+  regime_at_entry: string | null;
+  retail_view: string | null;
+  institutional_view: string | null;
+  adversarial_view: string | null;
+  confirming_signals: Array<{ kind: string; evidence: string }> | null;
+  invalidation_signal: string | null;
+  expected_holding_period: string | null;
+  postmortem: TradePostmortem | null;
+}
+
+export interface TradePostmortem {
+  thesis_correct: boolean;
+  what_we_missed: string;
+  luck_or_skill: 'luck' | 'skill' | 'mixed';
+  lesson: string;
 }
 
 export interface SystemState {

@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Trade } from '@loob/db';
+import type { Trade, TradePostmortem } from '@loob/db';
 import {
   insertTrade,
   closeTrade,
@@ -15,6 +15,13 @@ const DEFAULT_MAX_OPEN_EXPOSURE_USD = 10_000;
 const DEFAULT_SLIPPAGE_BPS = 5;
 const DEFAULT_FEE_BPS = 10;
 const DEFAULT_CONFIDENCE = 0.5;
+
+// Conviction gate: minimum honest confidence to open ANY trade. Below this,
+// the gate is the right answer regardless of size. v2: trade rarely, well.
+const MIN_TRADE_CONFIDENCE = 0.65;
+// Soft post-entry exposure cap. v2 wants 1-2 simultaneous positions, not 5.
+const POST_ENTRY_EXPOSURE_FRACTION = 0.5;
+const MIN_CONFIRMING_SIGNALS = 2;
 
 export function maxOpenExposureUsd(): number {
   const raw = process.env.MAX_OPEN_EXPOSURE_USD;
@@ -104,6 +111,14 @@ export interface PaperTradeOpenInput {
     time_limit?: string;
     conditions?: string;
   };
+  // v2: adversarial rationale (REQUIRED for paper_trade_open)
+  regime_at_entry?: string;
+  retail_view?: string;
+  institutional_view?: string;
+  adversarial_view?: string;
+  confirming_signals?: Array<{ kind: string; evidence: string }>;
+  invalidation_signal?: string;
+  expected_holding_period?: string;
 }
 
 export async function paperTradeOpen(
@@ -122,6 +137,33 @@ export async function paperTradeOpen(
       ? DEFAULT_CONFIDENCE
       : Math.max(0, Math.min(1, rawConfidence));
 
+    // v2 Conviction Gate — applies BEFORE size math. Trade only on real conviction.
+    if (confidence < MIN_TRADE_CONFIDENCE) {
+      return err(
+        `Conviction gate: confidence ${confidence.toFixed(2)} < ${MIN_TRADE_CONFIDENCE} minimum. Do not open. Add this setup to the watchlist instead and articulate what would push confidence above the gate.`,
+      );
+    }
+
+    // v2: structured rationale REQUIRED. The whole point of v2 is that every trade
+    // produces a falsifiable lesson — so every trade must articulate the three views.
+    const missingFields: string[] = [];
+    if (!input.retail_view || input.retail_view.trim().length < 20) missingFields.push('retail_view');
+    if (!input.institutional_view || input.institutional_view.trim().length < 20)
+      missingFields.push('institutional_view');
+    if (!input.adversarial_view || input.adversarial_view.trim().length < 20)
+      missingFields.push('adversarial_view');
+    if (!input.invalidation_signal || input.invalidation_signal.trim().length < 10)
+      missingFields.push('invalidation_signal');
+    const signals = input.confirming_signals ?? [];
+    if (signals.length < MIN_CONFIRMING_SIGNALS) missingFields.push(`confirming_signals (need ≥${MIN_CONFIRMING_SIGNALS})`);
+    if (missingFields.length > 0) {
+      return err(
+        `Adversarial rationale incomplete. Missing or too short: ${missingFields.join(', ')}. ` +
+          `Articulate retail / institutional / adversarial views (≥20 chars each), a concrete invalidation signal, ` +
+          `and at least ${MIN_CONFIRMING_SIGNALS} independent confirming signals before opening.`,
+      );
+    }
+
     const cap = maxOpenExposureUsd();
 
     const maxForConfidence = maxSizeForConfidence(cap, confidence);
@@ -133,11 +175,13 @@ export async function paperTradeOpen(
 
     const openTrades = await deps.getOpenTrades(db);
     const currentExposure = openTrades.reduce((s, t) => s + t.size_usd, 0);
-    if (currentExposure + input.size_usd > cap) {
+    // v2: tighter post-entry exposure cap to discourage stacking marginal positions.
+    const postEntryCap = cap * POST_ENTRY_EXPOSURE_FRACTION;
+    if (currentExposure + input.size_usd > postEntryCap) {
       return err(
         `Exposure cap exceeded: would push open notional from $${currentExposure.toFixed(2)} to $${(
           currentExposure + input.size_usd
-        ).toFixed(2)} (cap $${cap}). Close a position or reduce size.`,
+        ).toFixed(2)} (v2 post-entry cap $${postEntryCap.toFixed(0)} = ${POST_ENTRY_EXPOSURE_FRACTION * 100}% of $${cap}). Close a position or reduce size.`,
       );
     }
 
@@ -173,6 +217,14 @@ export async function paperTradeOpen(
       pnl_usd: null,
       confidence,
       closed_at: null,
+      regime_at_entry: input.regime_at_entry ?? null,
+      retail_view: input.retail_view ?? null,
+      institutional_view: input.institutional_view ?? null,
+      adversarial_view: input.adversarial_view ?? null,
+      confirming_signals: signals,
+      invalidation_signal: input.invalidation_signal ?? null,
+      expected_holding_period: input.expected_holding_period ?? null,
+      postmortem: null,
     });
 
     return ok(trade);
@@ -184,6 +236,9 @@ export async function paperTradeOpen(
 export interface PaperTradeCloseInput {
   trade_id: string;
   reason: string;
+  // v2: structured postmortem REQUIRED on discretionary close. The auto-close path
+  // (TP/SL/time_limit) skips this requirement since it's mechanical, not discretionary.
+  postmortem?: TradePostmortem;
 }
 
 export async function paperTradeClose(
@@ -203,12 +258,30 @@ export async function paperTradeClose(
     if (!trades || trades.length === 0) return err(`Trade ${input.trade_id} not found or already closed`);
 
     const trade = trades[0] as Trade;
+
+    // v2: discretionary closes must carry a structured postmortem so closed trades
+    // produce readable lessons on the next run.
+    const pm = input.postmortem;
+    if (
+      !pm ||
+      typeof pm.thesis_correct !== 'boolean' ||
+      !pm.what_we_missed ||
+      pm.what_we_missed.trim().length < 10 ||
+      !pm.lesson ||
+      pm.lesson.trim().length < 10 ||
+      (pm.luck_or_skill !== 'luck' && pm.luck_or_skill !== 'skill' && pm.luck_or_skill !== 'mixed')
+    ) {
+      return err(
+        'Postmortem required: pass postmortem={ thesis_correct: bool, what_we_missed: string (≥10 chars), luck_or_skill: "luck"|"skill"|"mixed", lesson: string (≥10 chars) }. Free-text reason alone is no longer accepted.',
+      );
+    }
+
     const rawExitPrice = await fetchRawMarkPrice(deps, trade);
     const fallback = rawExitPrice ?? trade.entry_price;
     const exitPrice = applyExitSlippage(fallback, trade.side);
     const pnl = computePnl(trade, exitPrice);
 
-    await deps.closeTrade(db, input.trade_id, exitPrice, pnl);
+    await deps.closeTrade(db, input.trade_id, exitPrice, pnl, pm);
 
     return ok({ trade_id: input.trade_id, pnl_usd: pnl, exit_price: exitPrice });
   } catch (e) {

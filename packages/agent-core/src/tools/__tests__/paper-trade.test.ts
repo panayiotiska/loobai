@@ -33,7 +33,32 @@ function tradeFixture(overrides: Partial<Trade> = {}): Trade {
     confidence: 0.8,
     opened_at: new Date().toISOString(),
     closed_at: null,
+    regime_at_entry: null,
+    retail_view: null,
+    institutional_view: null,
+    adversarial_view: null,
+    confirming_signals: null,
+    invalidation_signal: null,
+    expected_holding_period: null,
+    postmortem: null,
     ...overrides,
+  };
+}
+
+// v2 paper_trade_open requires structured adversarial rationale. This helper
+// returns a complete-enough payload so the trade actually opens.
+function validRationale() {
+  return {
+    regime_at_entry: 'trend-up',
+    retail_view: 'Retail headline says price going to $100k by Friday.',
+    institutional_view: 'Funding only modestly positive; OI buildup but no liquidation cascade signal.',
+    adversarial_view: 'Stop hunt at -3% from mark is possible but would need higher funding to justify.',
+    confirming_signals: [
+      { kind: 'funding', evidence: 'annualized 12% — elevated but not extreme' },
+      { kind: 'orderbook', evidence: 'bid-side wall 30% larger than ask' },
+    ],
+    invalidation_signal: 'Daily close below 50d SMA',
+    expected_holding_period: '3-7 days',
   };
 }
 
@@ -149,148 +174,128 @@ describe('maxSizeForConfidence', () => {
   it('clamps below 0', () => expect(maxSizeForConfidence(10_000, -0.5)).toBe(0));
 });
 
-describe('paperTradeOpen — exposure cap', () => {
-  it('rejects when total open notional would exceed cap', async () => {
-    process.env.MAX_OPEN_EXPOSURE_USD = '1000';
+describe('paperTradeOpen — v2 conviction gate', () => {
+  it('rejects confidence below the gate (0.65)', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
+    const deps = makeDeps();
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'BTC',
+      side: 'buy',
+      size_usd: 100,
+      thesis: 't',
+      confidence: 0.5,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/conviction gate/i);
+  });
+
+  it('rejects when adversarial rationale fields are missing', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
+    const deps = makeDeps();
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'BTC',
+      side: 'buy',
+      size_usd: 100,
+      thesis: 't',
+      confidence: 0.8,
+      exit_criteria: {},
+    }, deps);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/rationale incomplete/i);
+  });
+
+  it('opens cleanly when gate, rationale, and size all pass', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
+    const deps = makeDeps();
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'BTC',
+      side: 'buy',
+      size_usd: 100,
+      thesis: 't',
+      confidence: 0.8,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('paperTradeOpen — exposure cap (post-entry 50% of cap)', () => {
+  it('rejects when total open notional would exceed post-entry cap', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '1000'; // post-entry cap = $500
     const deps = makeDeps({
-      getOpenTrades: async () => [tradeFixture({ size_usd: 600 })],
+      getOpenTrades: async () => [tradeFixture({ size_usd: 300 })],
     });
     const result = await paperTradeOpen(FAKE_DB, 'r1', {
       instrument_kind: 'crypto',
       instrument_id: 'BTC',
       side: 'buy',
-      size_usd: 500,
+      size_usd: 300, // 300 + 300 = 600 > 500
       thesis: 't',
       confidence: 1.0,
       exit_criteria: {},
+      ...validRationale(),
     }, deps);
     expect(result.ok).toBe(false);
     expect(!result.ok && result.error).toMatch(/exposure cap/i);
   });
 
-  it('allows when at the boundary', async () => {
-    process.env.MAX_OPEN_EXPOSURE_USD = '1000';
+  it('allows when at the post-entry boundary', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '1000'; // post-entry cap = $500
     const deps = makeDeps({
-      getOpenTrades: async () => [tradeFixture({ size_usd: 500 })],
+      getOpenTrades: async () => [tradeFixture({ size_usd: 200 })],
     });
     const result = await paperTradeOpen(FAKE_DB, 'r1', {
       instrument_kind: 'crypto',
       instrument_id: 'BTC',
       side: 'buy',
-      size_usd: 500,
+      size_usd: 300, // 200 + 300 = 500 boundary
       thesis: 't',
       confidence: 1.0,
       exit_criteria: {},
+      ...validRationale(),
     }, deps);
     expect(result.ok).toBe(true);
   });
-
-  it('sums multiple open trades correctly', async () => {
-    process.env.MAX_OPEN_EXPOSURE_USD = '1000';
-    const deps = makeDeps({
-      getOpenTrades: async () => [
-        tradeFixture({ size_usd: 300 }),
-        tradeFixture({ size_usd: 400 }),
-      ],
-    });
-    const result = await paperTradeOpen(FAKE_DB, 'r1', {
-      instrument_kind: 'crypto',
-      instrument_id: 'BTC',
-      side: 'buy',
-      size_usd: 301,
-      thesis: 't',
-      confidence: 1.0,
-      exit_criteria: {},
-    }, deps);
-    expect(result.ok).toBe(false);
-  });
 });
 
-describe('paperTradeOpen — confidence sizing', () => {
-  it('rejects size above cap × conf² at conf 0.5', async () => {
-    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
+describe('paperTradeOpen — confidence sizing (post-gate)', () => {
+  it('rejects size above cap × conf² at conf 0.7', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000'; // post-entry = 5000, conf²=0.49 → 4900
     const deps = makeDeps();
     const result = await paperTradeOpen(FAKE_DB, 'r1', {
       instrument_kind: 'crypto',
       instrument_id: 'BTC',
       side: 'buy',
-      size_usd: 3000,
+      size_usd: 4950, // < post-entry (5000) but > conf² (4900)
       thesis: 't',
-      confidence: 0.5,
+      confidence: 0.7,
       exit_criteria: {},
+      ...validRationale(),
     }, deps);
     expect(result.ok).toBe(false);
     expect(!result.ok && result.error).toMatch(/confidence cap/i);
   });
 
-  it('accepts size at boundary for conf 0.5', async () => {
-    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
+  it('full cap available at conf 1.0 within post-entry cap', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000'; // post-entry cap = 5000
     const deps = makeDeps();
     const result = await paperTradeOpen(FAKE_DB, 'r1', {
       instrument_kind: 'crypto',
       instrument_id: 'BTC',
       side: 'buy',
-      size_usd: 2500,
-      thesis: 't',
-      confidence: 0.5,
-      exit_criteria: {},
-    }, deps);
-    expect(result.ok).toBe(true);
-  });
-
-  it('full cap available at conf 1.0', async () => {
-    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
-    const deps = makeDeps();
-    const result = await paperTradeOpen(FAKE_DB, 'r1', {
-      instrument_kind: 'crypto',
-      instrument_id: 'BTC',
-      side: 'buy',
-      size_usd: 10_000,
+      size_usd: 5_000,
       thesis: 't',
       confidence: 1.0,
       exit_criteria: {},
+      ...validRationale(),
     }, deps);
     expect(result.ok).toBe(true);
-  });
-
-  it('zero confidence rejects any positive size', async () => {
-    const deps = makeDeps();
-    const result = await paperTradeOpen(FAKE_DB, 'r1', {
-      instrument_kind: 'crypto',
-      instrument_id: 'BTC',
-      side: 'buy',
-      size_usd: 1,
-      thesis: 't',
-      confidence: 0.0,
-      exit_criteria: {},
-    }, deps);
-    expect(result.ok).toBe(false);
-  });
-
-  it('null confidence defaults to 0.5 (25% of cap)', async () => {
-    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
-    const deps = makeDeps();
-    const tooBig = await paperTradeOpen(FAKE_DB, 'r1', {
-      instrument_kind: 'crypto',
-      instrument_id: 'BTC',
-      side: 'buy',
-      size_usd: 2600,
-      thesis: 't',
-      confidence: null,
-      exit_criteria: {},
-    }, deps);
-    expect(tooBig.ok).toBe(false);
-
-    const justRight = await paperTradeOpen(FAKE_DB, 'r1', {
-      instrument_kind: 'crypto',
-      instrument_id: 'BTC',
-      side: 'buy',
-      size_usd: 2400,
-      thesis: 't',
-      confidence: null,
-      exit_criteria: {},
-    }, deps);
-    expect(justRight.ok).toBe(true);
   });
 
   it('persists confidence on insert', async () => {
@@ -309,8 +314,32 @@ describe('paperTradeOpen — confidence sizing', () => {
       thesis: 't',
       confidence: 0.75,
       exit_criteria: {},
+      ...validRationale(),
     }, deps);
     expect(captured).toBeCloseTo(0.75);
+  });
+
+  it('persists structured rationale fields on insert', async () => {
+    const captured: Record<string, unknown> = {};
+    const deps = makeDeps({
+      insertTrade: async (_db, payload) => {
+        Object.assign(captured, payload);
+        return { ...tradeFixture(), ...payload, id: 'inserted' };
+      },
+    });
+    await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'BTC',
+      side: 'buy',
+      size_usd: 100,
+      thesis: 't',
+      confidence: 0.8,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(captured.retail_view).toMatch(/Retail headline/);
+    expect(captured.adversarial_view).toMatch(/Stop hunt/);
+    expect((captured.confirming_signals as unknown[]).length).toBe(2);
   });
 });
 
@@ -333,6 +362,7 @@ describe('paperTradeOpen — entry price fetch', () => {
       thesis: 't',
       confidence: 1.0,
       exit_criteria: {},
+      ...validRationale(),
     }, deps);
     // Entry slippage for buy = 50000 * (1 + 5bps) = 50025
     expect(captured).toBeCloseTo(50_025, 1);
@@ -350,6 +380,7 @@ describe('paperTradeOpen — entry price fetch', () => {
       thesis: 't',
       confidence: 1.0,
       exit_criteria: {},
+      ...validRationale(),
     }, deps);
     expect(result.ok).toBe(false);
     expect(!result.ok && result.error).toMatch(/entry price/i);
@@ -371,6 +402,7 @@ describe('paperTradeOpen — entry price fetch', () => {
       thesis: 't',
       confidence: 1.0,
       exit_criteria: {},
+      ...validRationale(),
     }, deps);
     // mid 0.51 with yes entry slippage = 0.51 * 1.0005
     expect(captured).toBeGreaterThan(0.51);
@@ -389,16 +421,15 @@ describe('paperTradeOpen — input validation', () => {
       thesis: 't',
       confidence: 1.0,
       exit_criteria: {},
+      ...validRationale(),
     }, deps);
     expect(r.ok).toBe(false);
   });
 });
 
 describe('paperTradeClose', () => {
-  it('writes correct exit price + PnL via closeTrade', async () => {
-    const trade = tradeFixture({ side: 'buy', entry_price: 100, size_usd: 1000 });
-    let captured: { id: string; exitPrice: number; pnl: number } | null = null;
-    const fakeDb = {
+  function mkFakeDb(trade: Trade) {
+    return {
       from: () => ({
         select: () => ({
           eq: () => ({
@@ -409,19 +440,70 @@ describe('paperTradeClose', () => {
         }),
       }),
     } as unknown as never;
+  }
+
+  const validPostmortem = {
+    thesis_correct: false,
+    what_we_missed: 'underestimated funding pressure',
+    luck_or_skill: 'mixed' as const,
+    lesson: 'always check funding extremes before swing entries',
+  };
+
+  it('writes correct exit price + PnL via closeTrade when postmortem is provided', async () => {
+    const trade = tradeFixture({ side: 'buy', entry_price: 100, size_usd: 1000 });
+    let captured: { id: string; exitPrice: number; pnl: number; pm: unknown } | null = null;
     const deps = makeDeps({
       getCryptoPrice: async () =>
         ok({ symbol: 'BTC', priceUsd: 110, change24hPct: 0, marketCapUsd: 0, volumeUsd24h: 0 }),
-      closeTrade: async (_db, id, exitPrice, pnl) => {
-        captured = { id, exitPrice, pnl };
+      closeTrade: async (_db, id, exitPrice, pnl, pm) => {
+        captured = { id, exitPrice, pnl, pm };
       },
     });
-    const result = await paperTradeClose(fakeDb, { trade_id: trade.id, reason: 'manual' }, deps);
+    const result = await paperTradeClose(
+      mkFakeDb(trade),
+      { trade_id: trade.id, reason: 'manual', postmortem: validPostmortem },
+      deps,
+    );
     expect(result.ok).toBe(true);
     expect(captured).not.toBeNull();
     expect(captured!.id).toBe(trade.id);
-    // exit slippage on buy = 110 * 0.9995 = 109.945; PnL > 0
     expect(captured!.exitPrice).toBeCloseTo(109.945, 2);
     expect(captured!.pnl).toBeGreaterThan(0);
+    expect(captured!.pm).toEqual(validPostmortem);
+  });
+
+  it('rejects close without postmortem', async () => {
+    const trade = tradeFixture({ side: 'buy', entry_price: 100, size_usd: 1000 });
+    const deps = makeDeps({
+      getCryptoPrice: async () =>
+        ok({ symbol: 'BTC', priceUsd: 110, change24hPct: 0, marketCapUsd: 0, volumeUsd24h: 0 }),
+    });
+    const result = await paperTradeClose(mkFakeDb(trade), { trade_id: trade.id, reason: 'manual' }, deps);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toMatch(/postmortem required/i);
+  });
+
+  it('rejects close with malformed postmortem', async () => {
+    const trade = tradeFixture({ side: 'buy', entry_price: 100, size_usd: 1000 });
+    const deps = makeDeps({
+      getCryptoPrice: async () =>
+        ok({ symbol: 'BTC', priceUsd: 110, change24hPct: 0, marketCapUsd: 0, volumeUsd24h: 0 }),
+    });
+    const result = await paperTradeClose(
+      mkFakeDb(trade),
+      {
+        trade_id: trade.id,
+        reason: 'manual',
+        postmortem: {
+          thesis_correct: true,
+          what_we_missed: 'too short',
+          luck_or_skill: 'skill',
+          lesson: 'short',
+        },
+      },
+      deps,
+    );
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toMatch(/postmortem required/i);
   });
 });

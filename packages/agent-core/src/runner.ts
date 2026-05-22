@@ -11,6 +11,7 @@ import {
   getUnconsumedNotes,
   getSystemState,
   markNotesConsumed,
+  getRunsWithoutFormulaUpdate,
 } from '@loob/db';
 
 import { buildSystemPrompt } from './prompts/system.js';
@@ -26,7 +27,12 @@ const log = pino({
 });
 
 const MAX_ITERATIONS: Record<RunKind, number> = {
-  research: 12,
+  // v2: research budget bumped 12→18 to absorb the mandatory startup ritual
+  // (read_lessons_learned, get_portfolio_stats, read_recent_runs, assess_market_regime)
+  // plus the adversarial pre-trade checks (funding extremes, orderbook imbalance,
+  // long/short ratio, liquidation zones, manipulation signals) without running
+  // out of room to actually write a trade or formula update.
+  research: 18,
   monitor: 4,
 };
 
@@ -110,6 +116,51 @@ export async function runTick(kind: RunKind): Promise<void> {
 
     const { tokenUsage, costUsd } = result;
     finalJson = result.finalJson;
+
+    // v2 wrap-up enforcement (research only). If trades closed this run OR the
+    // formula has been stagnant for ≥6 successful runs, force a follow-up Gemini
+    // call to make the agent write a Lessons-section update. Stagnation without
+    // recording why is the bug we are explicitly engineering against.
+    if (kind === 'research' && !finalJson.newFormula) {
+      const tradesClosedThisRun = finalJson.paperTradesClosed.length > 0;
+      let staleStreak = 0;
+      if (!tradesClosedThisRun) {
+        try {
+          const stagnant = await getRunsWithoutFormulaUpdate(db, 6);
+          staleStreak = stagnant.length;
+        } catch (e) {
+          log.warn({ msg: 'stagnant-streak check failed', err: String(e) });
+        }
+      }
+      if (tradesClosedThisRun || staleStreak >= 6) {
+        const directive = tradesClosedThisRun
+          ? `You closed ${finalJson.paperTradesClosed.length} trade(s) this run but did not write a new FORMULA.md version. ` +
+            `This is mandatory: write a new version whose "## Lessons learned" section references each closed trade UUID with its structured postmortem. ` +
+            `Output a single fenced json RunOutput block with newFormula + formulaChangelog. Do not call tools.`
+          : `FORMULA has not been updated for ${staleStreak} consecutive successful runs. Write an "I am not seeing edge yet — here is what I am watching" version: update the regime, watchlist, and what would push confidence above the gate. Output a single fenced json RunOutput block with newFormula + formulaChangelog. Do not call tools.`;
+        log.info({ msg: 'forcing wrap-up follow-up for formula update', runId: run.id, tradesClosedThisRun, staleStreak });
+        try {
+          const followup = await runGeminiLoop({
+            systemPrompt: `${systemPrompt}\n\n## WRAP-UP DIRECTIVE\n${directive}`,
+            toolDeclarations: [],
+            toolHandlers: {},
+            maxIterations: 1,
+            runId: run.id,
+            db,
+          });
+          if (followup.finalJson.newFormula) {
+            finalJson = {
+              ...finalJson,
+              newFormula: followup.finalJson.newFormula,
+              formulaChangelog: followup.finalJson.formulaChangelog ?? finalJson.formulaChangelog,
+              summary: finalJson.summary, // keep original telegram summary
+            };
+          }
+        } catch (e) {
+          log.warn({ msg: 'wrap-up follow-up failed', runId: run.id, err: String(e) });
+        }
+      }
+    }
 
     // Persist new formula version if agent updated it
     if (finalJson.newFormula) {

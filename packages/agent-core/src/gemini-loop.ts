@@ -31,6 +31,14 @@ export function computeLlmCostUsd(input: number, output: number): number {
 const PER_RUN_TOOL_CAPS: Record<string, number> = {
   search_news: 6,
   get_crypto_price: 20,
+  // v2 microstructure / regime tools — bounded so one mandatory pass survives but
+  // the agent can't recurse on them forever.
+  assess_market_regime: 2,
+  get_funding_extremes: 3,
+  get_orderbook_imbalance: 6,
+  get_long_short_ratio: 6,
+  get_liquidation_zones: 6,
+  detect_manipulation_signals: 6,
 };
 const DEFAULT_TOOL_CAP = 12;
 

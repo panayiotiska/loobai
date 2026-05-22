@@ -156,17 +156,52 @@ export async function closeTrade(
   id: string,
   exitPrice: number,
   pnlUsd: number,
+  postmortem?: import('./types.js').TradePostmortem | null,
 ): Promise<void> {
-  const { error } = await db
-    .from('trades')
-    .update({
-      exit_price: exitPrice,
-      pnl_usd: pnlUsd,
-      status: 'closed',
-      closed_at: new Date().toISOString(),
-    })
-    .eq('id', id);
+  const patch: Record<string, unknown> = {
+    exit_price: exitPrice,
+    pnl_usd: pnlUsd,
+    status: 'closed',
+    closed_at: new Date().toISOString(),
+  };
+  if (postmortem) patch.postmortem = postmortem;
+  const { error } = await db.from('trades').update(patch).eq('id', id);
   if (error) throw new Error(`closeTrade: ${error.message}`);
+}
+
+// Recent closed trades with their structured postmortem, used by read_lessons_learned
+// so the agent reads real per-trade lessons (not just the FORMULA's append-only section).
+export async function getClosedTradesWithPostmortems(db: DB, limit = 20): Promise<Trade[]> {
+  const { data, error } = await db
+    .from('trades')
+    .select()
+    .eq('status', 'closed')
+    .order('closed_at', { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(`getClosedTradesWithPostmortems: ${error.message}`);
+  return (data ?? []) as Trade[];
+}
+
+export async function getRunsWithoutFormulaUpdate(db: DB, limit = 10): Promise<Run[]> {
+  // Recent successful runs that did NOT produce a new formula version.
+  // Used to detect a stagnant strategy doc.
+  const { data, error } = await db
+    .from('runs')
+    .select()
+    .eq('status', 'success')
+    .order('started_at', { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(`getRunsWithoutFormulaUpdate: ${error.message}`);
+  const runs = (data ?? []) as Run[];
+  if (runs.length === 0) return [];
+  const ids = runs.map((r) => r.id);
+  const { data: versions, error: vErr } = await db
+    .from('formula_versions')
+    .select('run_id')
+    .in('run_id', ids);
+  if (vErr) throw new Error(`getRunsWithoutFormulaUpdate: ${vErr.message}`);
+  const withFormula = new Set(((versions ?? []) as Array<{ run_id: string }>).map((v) => v.run_id));
+  return runs.filter((r) => !withFormula.has(r.id));
 }
 
 export async function updateOpenTradePnl(

@@ -19,14 +19,38 @@ export interface FundingExtreme {
   severity: 'extreme' | 'elevated' | 'normal';
 }
 
-const DEFAULT_FUNDING_UNIVERSE = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE', 'AVAX', 'LINK'];
+export const MAJORS_UNIVERSE = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE', 'AVAX', 'LINK'];
+export const EXTENDED_UNIVERSE = [
+  ...MAJORS_UNIVERSE,
+  'SUI', 'APT', 'TIA', 'SEI', 'INJ', 'NEAR', 'OP', 'ARB',
+  'HYPE', 'RNDR', 'FET', 'ATOM', 'LDO', 'JUP', 'PYTH', 'ENA',
+  'ONDO', 'WLD', 'STRK', 'RON', 'TON', 'TRX', 'LTC', 'ICP',
+];
 
-export async function getFundingExtremes(symbols?: string[]): Promise<Result<FundingExtreme[]>> {
-  const universe = (symbols && symbols.length > 0 ? symbols : DEFAULT_FUNDING_UNIVERSE).map((s) =>
-    s.toUpperCase(),
-  );
+export type FundingTier = 'majors' | 'extended' | 'all';
+
+async function fetchInBatches<T, R>(items: T[], batchSize: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const res = await Promise.all(batch.map(fn));
+    out.push(...res);
+  }
+  return out;
+}
+
+export async function getFundingExtremes(
+  symbols?: string[],
+  tier: FundingTier = 'extended',
+): Promise<Result<FundingExtreme[]>> {
+  const base = symbols && symbols.length > 0
+    ? symbols
+    : tier === 'majors'
+      ? MAJORS_UNIVERSE
+      : EXTENDED_UNIVERSE;
+  const universe = base.map((s) => s.toUpperCase());
   try {
-    const results = await Promise.all(universe.map((s) => getCryptoDerivatives(s)));
+    const results = await fetchInBatches(universe, 5, (s) => getCryptoDerivatives(s));
     const out: FundingExtreme[] = [];
     for (let i = 0; i < results.length; i++) {
       const r = results[i];

@@ -41,6 +41,7 @@ function tradeFixture(overrides: Partial<Trade> = {}): Trade {
     invalidation_signal: null,
     expected_holding_period: null,
     postmortem: null,
+    size_class: 'conviction',
     ...overrides,
   };
 }
@@ -222,6 +223,69 @@ describe('paperTradeOpen — v2 conviction gate', () => {
       ...validRationale(),
     }, deps);
     expect(r.ok).toBe(true);
+  });
+});
+
+describe('paperTradeOpen — scout tier', () => {
+  it('scout accepts confidence 0.55 + 1 signal', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
+    const deps = makeDeps();
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'SUI',
+      side: 'sell',
+      size_usd: 500,
+      size_class: 'scout',
+      thesis: 'crowded longs on SUI',
+      confidence: 0.58,
+      exit_criteria: {},
+      regime_at_entry: 'chop',
+      retail_view: 'Crowd is bullish on SUI on Twitter and price action.',
+      institutional_view: 'Funding annualized 38% — longs paying shorts heavily, crowded.',
+      adversarial_view: 'Smart money may run stops higher first before mean reversion.',
+      confirming_signals: [
+        { kind: 'funding', evidence: 'SUI funding ann 38% — extreme longs' },
+      ],
+      invalidation_signal: '4h close above $2.05',
+    }, deps);
+    expect(r.ok).toBe(true);
+  });
+
+  it('scout rejects below 0.55 confidence', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
+    const deps = makeDeps();
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'SUI',
+      side: 'sell',
+      size_usd: 500,
+      size_class: 'scout',
+      thesis: 't',
+      confidence: 0.50,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/conviction gate \(scout\)/i);
+  });
+
+  it('scout rejects size over 25% of cap', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000'; // scout per-trade cap = $2500
+    const deps = makeDeps();
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'SUI',
+      side: 'sell',
+      size_usd: 3000,
+      size_class: 'scout',
+      thesis: 't',
+      confidence: 0.60,
+      exit_criteria: {},
+      ...validRationale(),
+      confirming_signals: [{ kind: 'funding', evidence: 'annualized 38%' }],
+    }, deps);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/scout size cap/i);
   });
 });
 

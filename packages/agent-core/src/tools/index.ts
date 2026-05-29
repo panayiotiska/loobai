@@ -10,6 +10,8 @@ import {
   getPolymarketMarket,
   getPolymarketOrderbook,
   getPolymarketPriceHistory,
+  scanLowCapMovers,
+  scanPolymarketTrending,
   type PolymarketHistoryInterval,
 } from './market-data.js';
 import { getCryptoDerivatives } from './derivatives.js';
@@ -23,6 +25,7 @@ import {
   getLongShortRatio,
   getLiquidationZones,
   detectManipulationSignals,
+  type FundingTier,
 } from './microstructure.js';
 import { getClosedTradesWithPostmortems } from '@loob/db';
 
@@ -142,15 +145,42 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
     },
     {
       name: 'get_funding_extremes',
-      description: 'Survey funding rates across a crypto universe (default: BTC, ETH, SOL, BNB, XRP, DOGE, AVAX, LINK). Returns sorted by |annualized funding| with severity (extreme/elevated/normal) and crowded side. Use to find crowded longs/shorts BEFORE picking an instrument.',
+      description: 'Survey funding rates across a crypto universe. tier="majors" (8 large caps), tier="extended" (~30 incl. mid-caps; DEFAULT), or pass symbols=[...] for a custom set. Returns sorted by |annualized funding| with severity (extreme/elevated/normal) and crowded side. The DEFAULT is intentionally broad — running on majors only means you cannot see rotation candidates.',
       parameters: {
         type: Type.OBJECT,
         properties: {
+          tier: { type: Type.STRING, description: '"majors" | "extended" | "all". Default "extended" (~30 symbols incl. SUI, APT, TIA, SEI, INJ, etc).' },
           symbols: {
             type: Type.ARRAY,
             items: { type: Type.STRING },
-            description: 'Optional list of symbols. Defaults to top-8 majors.',
+            description: 'Optional explicit symbol list. Overrides tier.',
           },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'scan_low_cap_movers',
+      description: 'Scan CoinGecko top-250-by-volume and surface mid/low-cap movers (default rank 50-250) sorted by |24h % change|. Use to find rotation candidates outside the majors universe. Returns symbol, name, market_cap_rank, 24h change, volume, market cap. THEN drill in with get_crypto_derivatives, get_funding_extremes(symbols=[...]), get_orderbook_imbalance, etc.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          rank_min: { type: Type.NUMBER, description: 'Inclusive lower bound on market-cap rank (default 50).' },
+          rank_max: { type: Type.NUMBER, description: 'Inclusive upper bound on market-cap rank (default 250).' },
+          top_n: { type: Type.NUMBER, description: 'Max rows to return (default 15).' },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'scan_polymarket_trending',
+      description: 'Curated wrapper over list_polymarket_markets — returns top-volume Polymarket markets resolving within 30 days that exceed a minimum volume threshold. Use this as the default Polymarket survey each research run before drilling into a specific slug with get_polymarket_market / get_polymarket_orderbook / get_polymarket_price_history.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          min_volume_usd: { type: Type.NUMBER, description: 'Minimum lifetime market volume in USD (default 50000).' },
+          max_days_to_resolution: { type: Type.NUMBER, description: 'Skip markets resolving more than N days out (default 30).' },
+          top_n: { type: Type.NUMBER, description: 'Max markets to return (default 10).' },
         },
         required: [],
       },
@@ -196,7 +226,7 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
     },
     {
       name: 'paper_trade_open',
-      description: 'Open a paper (simulated) position. v2 requires: (a) confidence ≥ 0.65; (b) full adversarial rationale — retail_view, institutional_view, adversarial_view (each ≥20 chars); (c) ≥2 independent confirming signals; (d) a concrete invalidation_signal; (e) regime_at_entry from assess_market_regime. Max size = cap × confidence² with a 50% post-entry exposure cap.',
+      description: 'Open a paper (simulated) position. TWO size classes: size_class="scout" (small, exploratory: confidence ≥ 0.55, ≥1 confirming signal, hard size cap 25% of MAX exposure, scout sub-budget 20%) — use when you see a plausible edge but the full conviction bar is not met. size_class="conviction" (full size: confidence ≥ 0.65, ≥2 confirming signals, max size = cap × confidence²). BOTH still require retail_view / institutional_view / adversarial_view (≥20 chars each), invalidation_signal, regime_at_entry. Scouts are how you learn — open them.',
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -205,8 +235,9 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
           instrument_label: { type: Type.STRING, description: 'Human-readable label (optional)' },
           side: { type: Type.STRING, description: '"buy", "sell", "yes", or "no"' },
           size_usd: { type: Type.NUMBER, description: 'Position size in USD' },
+          size_class: { type: Type.STRING, description: '"scout" (0.55+ conf, ≥1 signal, ≤25% of cap) or "conviction" (0.65+ conf, ≥2 signals, conf² sizing). Default "conviction".' },
           thesis: { type: Type.STRING, description: 'One-line summary of the setup' },
-          confidence: { type: Type.NUMBER, description: '0.65-1.0. Below 0.65 is rejected by the conviction gate. Max size = cap × confidence² (0.7→49%, 0.8→64%, 0.9→81%).' },
+          confidence: { type: Type.NUMBER, description: 'Scout: 0.55-1.0. Conviction: 0.65-1.0. For conviction trades max size = cap × confidence² (0.7→49%, 0.8→64%, 0.9→81%). For scouts size is capped at 25% of cap regardless.' },
           exit_criteria: {
             type: Type.OBJECT,
             description: 'Exit conditions',
@@ -398,7 +429,26 @@ export function buildToolHandlers(
       const symbols = Array.isArray(args.symbols)
         ? (args.symbols as unknown[]).filter((s) => typeof s === 'string').map((s) => s as string)
         : undefined;
-      return getFundingExtremes(symbols);
+      const tierRaw = typeof args.tier === 'string' ? args.tier.toLowerCase() : undefined;
+      const tier: FundingTier =
+        tierRaw === 'majors' || tierRaw === 'all' ? tierRaw : 'extended';
+      return getFundingExtremes(symbols, tier);
+    },
+
+    scan_low_cap_movers: async (args) => {
+      return scanLowCapMovers(
+        args.rank_min != null ? Number(args.rank_min) : 50,
+        args.rank_max != null ? Number(args.rank_max) : 250,
+        args.top_n != null ? Number(args.top_n) : 15,
+      );
+    },
+
+    scan_polymarket_trending: async (args) => {
+      return scanPolymarketTrending(
+        args.min_volume_usd != null ? Number(args.min_volume_usd) : 50_000,
+        args.max_days_to_resolution != null ? Number(args.max_days_to_resolution) : 30,
+        args.top_n != null ? Number(args.top_n) : 10,
+      );
     },
 
     get_orderbook_imbalance: async (args) => {
@@ -435,6 +485,7 @@ export function buildToolHandlers(
         instrument_label: args.instrument_label ? String(args.instrument_label) : undefined,
         side: args.side as 'buy' | 'sell' | 'yes' | 'no',
         size_usd: Number(args.size_usd),
+        size_class: (args.size_class === 'scout' ? 'scout' : 'conviction') as 'scout' | 'conviction',
         thesis: String(args.thesis),
         confidence: args.confidence != null ? Number(args.confidence) : null,
         exit_criteria: (args.exit_criteria ?? {}) as Record<string, unknown>,

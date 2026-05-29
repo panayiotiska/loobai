@@ -36,6 +36,7 @@ function tradeFixture(overrides: Partial<Trade> = {}): Trade {
     invalidation_signal: null,
     expected_holding_period: null,
     postmortem: null,
+    size_class: 'conviction',
     ...overrides,
   };
 }

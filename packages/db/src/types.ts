@@ -56,6 +56,8 @@ export interface Trade {
   invalidation_signal: string | null;
   expected_holding_period: string | null;
   postmortem: TradePostmortem | null;
+  // 0004: tiered conviction gate. Scout = small/exploratory, conviction = full size.
+  size_class: 'scout' | 'conviction';
 }
 
 export interface TradePostmortem {

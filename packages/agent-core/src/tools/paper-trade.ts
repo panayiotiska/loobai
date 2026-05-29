@@ -16,12 +16,19 @@ const DEFAULT_SLIPPAGE_BPS = 5;
 const DEFAULT_FEE_BPS = 10;
 const DEFAULT_CONFIDENCE = 0.5;
 
-// Conviction gate: minimum honest confidence to open ANY trade. Below this,
-// the gate is the right answer regardless of size. v2: trade rarely, well.
-const MIN_TRADE_CONFIDENCE = 0.65;
+// Tiered conviction gate. Scout = small, exploratory; conviction = full size.
+// Scout exists so the agent can act on plausible edges without the full
+// 0.65/2-signal bar — otherwise it sits in a permanent no-op loop.
+const MIN_SCOUT_CONFIDENCE = 0.55;
+const MIN_CONVICTION_CONFIDENCE = 0.65;
 // Soft post-entry exposure cap. v2 wants 1-2 simultaneous positions, not 5.
 const POST_ENTRY_EXPOSURE_FRACTION = 0.5;
-const MIN_CONFIRMING_SIGNALS = 2;
+// Scouts share a tighter sub-budget so they can't crowd out conviction trades.
+const SCOUT_EXPOSURE_FRACTION = 0.2;
+// Scouts are size-capped to a fraction of cap, regardless of confidence math.
+const SCOUT_SIZE_FRACTION = 0.25;
+const MIN_CONFIRMING_SIGNALS_CONVICTION = 2;
+const MIN_CONFIRMING_SIGNALS_SCOUT = 1;
 
 export function maxOpenExposureUsd(): number {
   const raw = process.env.MAX_OPEN_EXPOSURE_USD;
@@ -97,12 +104,15 @@ const defaultDeps: PaperTradeDeps = {
   now: () => Date.now(),
 };
 
+export type TradeSizeClass = 'scout' | 'conviction';
+
 export interface PaperTradeOpenInput {
   instrument_kind: 'crypto' | 'polymarket' | 'other';
   instrument_id: string;
   instrument_label?: string;
   side: Trade['side'];
   size_usd: number;
+  size_class?: TradeSizeClass;
   thesis: string;
   confidence?: number | null;
   exit_criteria: {
@@ -137,15 +147,21 @@ export async function paperTradeOpen(
       ? DEFAULT_CONFIDENCE
       : Math.max(0, Math.min(1, rawConfidence));
 
-    // v2 Conviction Gate — applies BEFORE size math. Trade only on real conviction.
-    if (confidence < MIN_TRADE_CONFIDENCE) {
+    const sizeClass: TradeSizeClass = input.size_class ?? 'conviction';
+    const minConfidence = sizeClass === 'scout' ? MIN_SCOUT_CONFIDENCE : MIN_CONVICTION_CONFIDENCE;
+    const minSignals =
+      sizeClass === 'scout' ? MIN_CONFIRMING_SIGNALS_SCOUT : MIN_CONFIRMING_SIGNALS_CONVICTION;
+
+    if (confidence < minConfidence) {
       return err(
-        `Conviction gate: confidence ${confidence.toFixed(2)} < ${MIN_TRADE_CONFIDENCE} minimum. Do not open. Add this setup to the watchlist instead and articulate what would push confidence above the gate.`,
+        `Conviction gate (${sizeClass}): confidence ${confidence.toFixed(2)} < ${minConfidence} minimum. ` +
+          (sizeClass === 'conviction'
+            ? `Downgrade to size_class='scout' (min 0.55) or skip and add to watchlist.`
+            : `Even a scout requires ≥${MIN_SCOUT_CONFIDENCE} confidence — articulate what would push it there.`),
       );
     }
 
-    // v2: structured rationale REQUIRED. The whole point of v2 is that every trade
-    // produces a falsifiable lesson — so every trade must articulate the three views.
+    // Three-perspective rationale REQUIRED for both tiers — scout just needs fewer signals.
     const missingFields: string[] = [];
     if (!input.retail_view || input.retail_view.trim().length < 20) missingFields.push('retail_view');
     if (!input.institutional_view || input.institutional_view.trim().length < 20)
@@ -155,27 +171,37 @@ export async function paperTradeOpen(
     if (!input.invalidation_signal || input.invalidation_signal.trim().length < 10)
       missingFields.push('invalidation_signal');
     const signals = input.confirming_signals ?? [];
-    if (signals.length < MIN_CONFIRMING_SIGNALS) missingFields.push(`confirming_signals (need ≥${MIN_CONFIRMING_SIGNALS})`);
+    if (signals.length < minSignals)
+      missingFields.push(`confirming_signals (need ≥${minSignals} for ${sizeClass})`);
     if (missingFields.length > 0) {
       return err(
-        `Adversarial rationale incomplete. Missing or too short: ${missingFields.join(', ')}. ` +
+        `Adversarial rationale incomplete for ${sizeClass}. Missing or too short: ${missingFields.join(', ')}. ` +
           `Articulate retail / institutional / adversarial views (≥20 chars each), a concrete invalidation signal, ` +
-          `and at least ${MIN_CONFIRMING_SIGNALS} independent confirming signals before opening.`,
+          `and at least ${minSignals} independent confirming signals before opening.`,
       );
     }
 
     const cap = maxOpenExposureUsd();
 
-    const maxForConfidence = maxSizeForConfidence(cap, confidence);
-    if (input.size_usd > maxForConfidence) {
-      return err(
-        `Confidence cap exceeded: confidence ${confidence.toFixed(2)} permits up to $${maxForConfidence.toFixed(2)} per trade (cap × conf² = $${cap} × ${confidence.toFixed(2)}²). Reduce size_usd or raise confidence honestly.`,
-      );
+    // Scout has a hard per-trade size cap; conviction uses confidence² curve.
+    if (sizeClass === 'scout') {
+      const scoutMax = cap * SCOUT_SIZE_FRACTION;
+      if (input.size_usd > scoutMax) {
+        return err(
+          `Scout size cap exceeded: scout trades capped at $${scoutMax.toFixed(0)} (${SCOUT_SIZE_FRACTION * 100}% of $${cap}). Reduce size_usd or open as size_class='conviction' (requires ≥${MIN_CONVICTION_CONFIDENCE} confidence + ≥${MIN_CONFIRMING_SIGNALS_CONVICTION} signals).`,
+        );
+      }
+    } else {
+      const maxForConfidence = maxSizeForConfidence(cap, confidence);
+      if (input.size_usd > maxForConfidence) {
+        return err(
+          `Confidence cap exceeded: confidence ${confidence.toFixed(2)} permits up to $${maxForConfidence.toFixed(2)} per trade (cap × conf² = $${cap} × ${confidence.toFixed(2)}²). Reduce size_usd or raise confidence honestly.`,
+        );
+      }
     }
 
     const openTrades = await deps.getOpenTrades(db);
     const currentExposure = openTrades.reduce((s, t) => s + t.size_usd, 0);
-    // v2: tighter post-entry exposure cap to discourage stacking marginal positions.
     const postEntryCap = cap * POST_ENTRY_EXPOSURE_FRACTION;
     if (currentExposure + input.size_usd > postEntryCap) {
       return err(
@@ -183,6 +209,19 @@ export async function paperTradeOpen(
           currentExposure + input.size_usd
         ).toFixed(2)} (v2 post-entry cap $${postEntryCap.toFixed(0)} = ${POST_ENTRY_EXPOSURE_FRACTION * 100}% of $${cap}). Close a position or reduce size.`,
       );
+    }
+
+    // Scout sub-budget — scouts share 20% of cap so they can't crowd conviction trades.
+    if (sizeClass === 'scout') {
+      const scoutExposure = openTrades
+        .filter((t) => t.size_class === 'scout')
+        .reduce((s, t) => s + t.size_usd, 0);
+      const scoutCap = cap * SCOUT_EXPOSURE_FRACTION;
+      if (scoutExposure + input.size_usd > scoutCap) {
+        return err(
+          `Scout sub-budget exceeded: current scout exposure $${scoutExposure.toFixed(2)} + $${input.size_usd} > scout cap $${scoutCap.toFixed(0)} (${SCOUT_EXPOSURE_FRACTION * 100}% of $${cap}). Close a scout or open this as size_class='conviction'.`,
+        );
+      }
     }
 
     // Fetch current price as entry price
@@ -225,6 +264,7 @@ export async function paperTradeOpen(
       invalidation_signal: input.invalidation_signal ?? null,
       expected_holding_period: input.expected_holding_period ?? null,
       postmortem: null,
+      size_class: sizeClass,
     });
 
     return ok(trade);

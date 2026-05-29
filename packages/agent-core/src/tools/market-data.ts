@@ -128,6 +128,88 @@ export async function getCryptoPrice(symbol: string): Promise<Result<CryptoPrice
   }
 }
 
+// =============================================================================
+// scan_low_cap_movers
+// =============================================================================
+// Scans CoinGecko top-volume coins, filters to mid/low-cap (rank 50-250), and
+// returns hot movers (sorted by |24h % change|). Lets the agent escape its
+// BTC/majors bubble and find rotation candidates.
+
+export interface LowCapMover {
+  symbol: string;
+  name: string;
+  market_cap_rank: number;
+  price_usd: number;
+  change_24h_pct: number;
+  volume_24h_usd: number;
+  market_cap_usd: number;
+}
+
+export async function scanLowCapMovers(
+  rankMin = 50,
+  rankMax = 250,
+  topN = 15,
+): Promise<Result<LowCapMover[]>> {
+  try {
+    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=250&page=1&price_change_percentage=24h`;
+    const res = await fetch(url);
+    if (!res.ok) return err(`CoinGecko markets error: ${res.status} ${res.statusText}`);
+
+    const json = (await res.json()) as Array<{
+      symbol: string;
+      name: string;
+      market_cap_rank: number | null;
+      current_price: number;
+      price_change_percentage_24h: number | null;
+      total_volume: number;
+      market_cap: number;
+    }>;
+
+    const movers: LowCapMover[] = json
+      .filter((c) =>
+        c.market_cap_rank != null &&
+        c.market_cap_rank >= rankMin &&
+        c.market_cap_rank <= rankMax &&
+        c.price_change_percentage_24h != null,
+      )
+      .map((c) => ({
+        symbol: c.symbol.toUpperCase(),
+        name: c.name,
+        market_cap_rank: c.market_cap_rank!,
+        price_usd: c.current_price,
+        change_24h_pct: c.price_change_percentage_24h!,
+        volume_24h_usd: c.total_volume,
+        market_cap_usd: c.market_cap,
+      }))
+      .sort((a, b) => Math.abs(b.change_24h_pct) - Math.abs(a.change_24h_pct))
+      .slice(0, topN);
+
+    return ok(movers);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+// =============================================================================
+// scan_polymarket_trending
+// =============================================================================
+// Preset wrapper over listPolymarketMarkets. Returns top-volume markets
+// resolving within 30 days that exceed a min volume threshold. Lets the agent
+// surface tradable prediction markets without picking filters itself.
+
+export async function scanPolymarketTrending(
+  minVolumeUsd = 50_000,
+  maxDaysToResolution = 30,
+  topN = 10,
+): Promise<Result<PolymarketMarket[]>> {
+  const res = await listPolymarketMarkets({
+    min_volume: minVolumeUsd,
+    max_days_to_resolution: maxDaysToResolution,
+  });
+  if (!res.ok) return res;
+  return ok(res.data.slice(0, topN));
+}
+
 export interface OHLCCandle {
   openTime: number;
   open: number;

@@ -4,6 +4,12 @@ import pino from 'pino';
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 
+// Escape characters Telegram's HTML parser treats as markup. Apply to ALL
+// agent-emitted fields so summaries containing "< $72k" or "&" don't 400.
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 async function sendTelegramMessage(text: string): Promise<void> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -46,12 +52,12 @@ export async function sendTelegramSummary(input: TelegramSummaryInput): Promise<
   const pnlStr = totalPnl >= 0 ? `+$${totalPnl.toFixed(2)}` : `-$${Math.abs(totalPnl).toFixed(2)}`;
   const confidencePct = (output.confidenceInThesis * 100).toFixed(0);
 
-  let message = `🧪 <b>Loob run</b> — ${runKind} — ✅\n`;
-  message += `<code>${runId.slice(0, 8)}</code>\n\n`;
-  message += `${output.summary}\n\n`;
+  let message = `🧪 <b>Loob run</b> — ${escapeHtml(runKind)} — ✅\n`;
+  message += `<code>${escapeHtml(runId.slice(0, 8))}</code>\n\n`;
+  message += `${escapeHtml(output.summary)}\n\n`;
   message += `📈 Open paper positions: ${openTrades.length} (${pnlStr})\n`;
   message += `📊 Confidence in thesis: ${confidencePct}%\n`;
-  message += `🎯 Next run focus: ${output.nextRunFocus}`;
+  message += `🎯 Next run focus: ${escapeHtml(output.nextRunFocus)}`;
 
   if (webUrl) {
     message += `\n\n🔗 ${webUrl}/runs/${runId}`;
@@ -77,6 +83,6 @@ export async function sendTelegramError(
     banner +
     `🚨 <b>Loob run failed</b>\n` +
     `<code>${runId.slice(0, 8)}</code>\n\n` +
-    `<code>${String(error).slice(0, 500)}</code>`;
+    `<code>${escapeHtml(String(error).slice(0, 500))}</code>`;
   await sendTelegramMessage(message);
 }

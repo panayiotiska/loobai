@@ -119,7 +119,7 @@ export async function POST(request: NextRequest) {
       await sendReply(
         chatId,
         [
-          '📊 Portfolio',
+          '[Portfolio]',
           `Realized PnL: $${s.realizedPnlUsd.toFixed(2)} (30d: $${s.realizedPnlLast30dUsd.toFixed(2)})`,
           `Unrealized PnL: $${s.openUnrealizedPnlUsd.toFixed(2)} on ${s.openCount} open ($${s.openExposureUsd.toFixed(2)} exposure)`,
           `Win rate: ${winRatePct}  (${s.wins}W / ${s.losses}L of ${s.closedCount} closed)`,
@@ -146,7 +146,7 @@ export async function POST(request: NextRequest) {
           const inv = t.invalidation_signal ?? '(no invalidation set)';
           return `• [${sz}] ${label} ${t.side.toUpperCase()} $${t.size_usd} @ ${t.entry_price} | ${pnl}\n  thesis: ${t.thesis.slice(0, 140)}\n  invalidation: ${inv.slice(0, 140)}`;
         });
-        await sendReply(chatId, `📈 ${trades.length} open\n${lines.join('\n')}`.slice(0, 4000));
+        await sendReply(chatId, `[${trades.length} open]\n${lines.join('\n')}`.slice(0, 4000));
       }
     } catch (e) {
       await sendReply(chatId, `❌ Error: ${String(e).slice(0, 200)}`);
@@ -165,11 +165,11 @@ export async function POST(request: NextRequest) {
         const lines = closed.map((t) => {
           const label = t.instrument_label ?? t.instrument_id;
           const pnl = t.pnl_usd ?? 0;
-          const tag = pnl >= 0 ? '✅' : '❌';
+          const tag = pnl >= 0 ? '[W]' : '[L]';
           const lesson = t.postmortem?.lesson ?? '(no postmortem)';
           return `${tag} ${label} ${t.side.toUpperCase()} | PnL $${pnl.toFixed(2)}\n  lesson: ${lesson.slice(0, 200)}`;
         });
-        await sendReply(chatId, `📜 last ${closed.length}\n${lines.join('\n')}`.slice(0, 4000));
+        await sendReply(chatId, `[last ${closed.length}]\n${lines.join('\n')}`.slice(0, 4000));
       }
     } catch (e) {
       await sendReply(chatId, `❌ Error: ${String(e).slice(0, 200)}`);
@@ -192,7 +192,7 @@ export async function POST(request: NextRequest) {
         const watch = grab('Watchlist');
         await sendReply(
           chatId,
-          [`🎯 FORMULA v${f.version}`, '', 'Regime:', regime.slice(0, 800), '', 'Watchlist:', watch.slice(0, 1500)].join('\n').slice(0, 4000),
+          [`[FORMULA v${f.version}]`, '', 'Regime:', regime.slice(0, 800), '', 'Watchlist:', watch.slice(0, 1500)].join('\n').slice(0, 4000),
         );
       }
     } catch (e) {

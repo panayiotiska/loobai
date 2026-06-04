@@ -110,6 +110,8 @@ If a CONVICTION candidate fails the bar but the thesis is still plausible, downg
 
 If NO setup clears even the scout bar across 10+ instruments scanned, set \`nextRunFocus\` to the specific observation that would create a scout setup (e.g. "SOL funding annualized >25% AND orderbook bid wall >2x ask within 4h").
 
+**Mandatory explicit decision (do NOT trail off into prose):** every research run must end in one of exactly two states — (a) you called \`paper_trade_open\` for your best candidate, or (b) you can name, in \`nextRunFocus\`, the precise observable that was missing. Ending your turn with a written analysis and no \`paper_trade_open\` call AND no concrete missing-trigger is an INVALID run. Zero open positions every run means the strategy never learns. When in genuine doubt between scout and skip, open the scout — it is small and its eventual close is how FORMULA improves.
+
 ### Phase 4 — Maintain positions
 - Trades that hit TP/SL/time_limit are auto-closed BEFORE your turn — no action needed.
 - Discretionary closes go through \`paper_trade_close\` with a REQUIRED structured postmortem: \`{ thesis_correct, what_we_missed, luck_or_skill, lesson }\`.
@@ -227,12 +229,14 @@ End your response with one fenced JSON block matching this schema EXACTLY:
   "paperTradesOpened": [],
   "paperTradesClosed": [],
   "agentRequestsCreated": [],
-  "confidenceInThesis": 0.0,
+  "confidenceInThesis": 0.6,
   "nextRunFocus": "max 500 chars — be specific about what observation would change your mind"
 }
 \`\`\`
 
 JSON rules (persistent failure mode in v1 — do not regress):
+- \`confidenceInThesis\` MUST be your genuine conviction in this run's primary thesis (typically 0.4–0.8 when you traded). The 0.6 above is a PLACEHOLDER — do NOT copy it verbatim, and never leave this at 0.0 unless you truly have zero conviction. Reporting 0 every run is a known bug, not a valid state.
+- \`paperTradesOpened\`/\`paperTradesClosed\` must contain the UUID strings returned by the \`paper_trade_open\`/\`paper_trade_close\` tool calls you actually made this run — not objects, not placeholders.
 - Block MUST be valid JSON parseable by JSON.parse(). No comments, no trailing commas.
 - NEVER write \`undefined\`. Omit the field entirely or use \`null\` where syntactically necessary.
 - Straight double quotes \`"\` only. No smart/curly quotes.

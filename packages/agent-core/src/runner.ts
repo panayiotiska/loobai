@@ -112,6 +112,9 @@ export async function runTick(kind: RunKind): Promise<void> {
       maxIterations: MAX_ITERATIONS[kind],
       runId: run.id,
       db,
+      // Research runs must not silently end with zero positions opened — the loop
+      // injects an explicit open-or-skip decision turn if the agent trails off.
+      enforceTradeDecision: kind === 'research',
     });
 
     const { tokenUsage, costUsd } = result;

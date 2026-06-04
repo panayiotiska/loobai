@@ -53,7 +53,27 @@ export interface GeminiLoopInput {
   runId: string;
   /** Optional — when provided, every tool call is persisted to the tool_calls table. */
   db?: DB;
+  /**
+   * Research-only. When true and the loop is about to end without a single
+   * successful `paper_trade_open` this run, inject ONE explicit decision turn
+   * (tools still enabled) demanding the agent either open its best scout-tier
+   * candidate or skip-with-trigger. Without this, weak models reliably trail
+   * off into prose after the breadth scans and never even attempt a trade —
+   * observed in 12/12 consecutive prod research runs (zero open positions ever).
+   */
+  enforceTradeDecision?: boolean;
 }
+
+// Injected once, when a research run is about to end with zero trades opened.
+// Keeps history + tools intact so the model can actually call paper_trade_open.
+const TRADE_DECISION_NUDGE =
+  'You are about to end this run without opening a position. That is the failure mode we are explicitly fighting: ' +
+  'open positions and realized PnL have been ZERO for many consecutive runs because the agent keeps researching and then skipping. ' +
+  'Make an EXPLICIT decision now on your single best candidate from the scans above:\n' +
+  '- If it clears the SCOUT bar — confidence ≥ 0.55, ≥1 confirming signal, three-perspective views (retail/institutional/adversarial, each ≥20 chars), ' +
+  'and a concrete invalidation_signal — then call `paper_trade_open` NOW with size_class="scout". Scouts are small and exist to LEARN; prefer a scout to a no-op.\n' +
+  '- Only if NO candidate clears even the scout bar, skip — and then emit the RunOutput JSON whose nextRunFocus names the exact observable that would create a setup.\n' +
+  'Do not narrate or analyze further. Your next action must be either a paper_trade_open call or the final fenced json RunOutput block.';
 
 export interface GeminiLoopResult {
   finalJson: RunOutput;
@@ -97,6 +117,10 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
   // Per-run tool dedupe + cap state. Reset every run, never cross-run.
   const toolCache = new Map<string, unknown>();
   const toolCallCount = new Map<string, number>();
+
+  // Trade-decision enforcement state (research only).
+  let paperTradeOpenedThisRun = false;
+  let tradeDecisionNudged = false;
 
   for (let iteration = 0; iteration < input.maxIterations; iteration++) {
     pruneHistory(history);
@@ -146,6 +170,16 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
     history.push({ role: 'model', parts: candidate.content?.parts ?? [] });
 
     if (functionCalls.length === 0) {
+      // The model thinks it's done. If this is a research run and it never
+      // actually opened a position, give it ONE explicit decision turn (tools
+      // still enabled) before letting it finish. This is the fix for the
+      // "researches then trails off, opens nothing" prod failure mode.
+      if (input.enforceTradeDecision && !tradeDecisionNudged && !paperTradeOpenedThisRun) {
+        log.info({ msg: 'no trade opened — injecting trade-decision nudge', runId: input.runId, iteration });
+        tradeDecisionNudged = true;
+        history.push({ role: 'user', parts: [{ text: TRADE_DECISION_NUDGE }] });
+        continue;
+      }
       log.info({ msg: 'gemini loop complete — no more tool calls', runId: input.runId, iteration });
       break;
     }
@@ -194,6 +228,8 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
       const durationMs = Math.round(performance.now() - start);
       const resultObj = result as { ok?: boolean; data?: unknown; error?: string };
       const okFlag = resultObj.ok === true;
+
+      if (name === 'paper_trade_open' && okFlag) paperTradeOpenedThisRun = true;
 
       log.info({ msg: 'tool result', runId: input.runId, tool: name, ok: okFlag, durationMs, cached, capped });
 

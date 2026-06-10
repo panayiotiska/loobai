@@ -143,11 +143,25 @@ export async function runTick(kind: RunKind): Promise<void> {
           : `FORMULA has not been updated for ${staleStreak} consecutive successful runs. Write an "I am not seeing edge yet — here is what I am watching" version: update the regime, watchlist, and what would push confidence above the gate. Output a single fenced json RunOutput block with newFormula + formulaChangelog. Do not call tools.`;
         log.info({ msg: 'forcing wrap-up follow-up for formula update', runId: run.id, tradesClosedThisRun, staleStreak });
         try {
+          // IMPORTANT: this follow-up must NOT reuse the full system prompt. The full
+          // prompt mandates the startup tool ritual; combined with empty toolHandlers
+          // it made the model see "Unknown tool" errors, conclude the infrastructure
+          // was broken, and write HALTED/tooling-failure versions of FORMULA (v71,
+          // v73, v76, v77). Use a minimal wrap-up prompt instead, and keep the real
+          // handlers wired so any stray tool call still succeeds.
+          const wrapUpPrompt = [
+            `You are Loob, an autonomous trading research agent, wrapping up a research run. This follow-up turn has ONE job: write an updated FORMULA.md version.`,
+            `Do NOT call tools in this turn. Skip the startup ritual — it already ran earlier in this run. If a tool call fails here, that is expected and is NOT an infrastructure problem: never record a "tooling failure" lesson or halt the strategy because of it.`,
+            `## Current FORMULA.md (v${currentFormula?.version ?? 0})\n${currentFormula?.content ?? '(none yet)'}`,
+            `## Directive\n${directive}`,
+            `Preserve ALL existing sections, hypotheses, and lessons — append and amend, never truncate. The updated document must not lose content unless a section is provably obsolete.`,
+            `## Output contract\nEnd your response with ONE fenced \`\`\`json block: {"summary": "...", "newFormula": "<full updated FORMULA.md markdown>", "formulaChangelog": "...", "paperTradesOpened": [], "paperTradesClosed": [], "agentRequestsCreated": [], "confidenceInThesis": 0.5, "nextRunFocus": "..."}. Valid JSON only — straight quotes, \\n escapes for newlines, no trailing commas, nothing after the block.`,
+          ].join('\n\n');
           const followup = await runGeminiLoop({
-            systemPrompt: `${systemPrompt}\n\n## WRAP-UP DIRECTIVE\n${directive}`,
+            systemPrompt: wrapUpPrompt,
             toolDeclarations: [],
-            toolHandlers: {},
-            maxIterations: 1,
+            toolHandlers,
+            maxIterations: 2,
             runId: run.id,
             db,
           });

@@ -205,7 +205,12 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
       let result: unknown;
 
       if (!handler) {
-        result = { ok: false, error: `Unknown tool: ${name}` };
+        // Self-describing error: the model previously read "Unknown tool" as an
+        // infrastructure outage and halted the whole strategy in FORMULA.
+        result = {
+          ok: false,
+          error: `Tool '${name}' is not available in this turn. This is NOT an infrastructure failure — do not halt the strategy or record a tooling-failure lesson. Continue with the information you already have.`,
+        };
       } else if (toolCache.has(cacheKey)) {
         result = toolCache.get(cacheKey);
         cached = true;

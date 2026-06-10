@@ -5,11 +5,13 @@ import {
   closeTrade,
   getOpenTrades,
   updateOpenTradePnl,
+  updateOpenTradeCarry,
 } from '@loob/db';
 import type { Result } from '@loob/shared';
 import { ok, err } from '@loob/shared';
 import { getCryptoPrice } from './market-data.js';
 import { getPolymarketOrderbook } from './market-data.js';
+import { getCryptoDerivatives } from './derivatives.js';
 
 const DEFAULT_MAX_OPEN_EXPOSURE_USD = 10_000;
 const DEFAULT_SLIPPAGE_BPS = 5;
@@ -29,6 +31,10 @@ const SCOUT_EXPOSURE_FRACTION = 0.2;
 const SCOUT_SIZE_FRACTION = 0.25;
 const MIN_CONFIRMING_SIGNALS_CONVICTION = 2;
 const MIN_CONFIRMING_SIGNALS_SCOUT = 1;
+// Correlation control: same-regime scouts are effectively one macro bet, not
+// independent samples (June 2026: 7 concurrent long-alt scouts in extreme fear
+// = a single leveraged "market bounces" wager). Cap concurrency hard.
+const MAX_CONCURRENT_SCOUTS = 3;
 
 export function maxOpenExposureUsd(): number {
   const raw = process.env.MAX_OPEN_EXPOSURE_USD;
@@ -68,7 +74,10 @@ export function computePnl(trade: Trade, exitPrice: number): number {
   const directional = trade.side === 'buy' || trade.side === 'yes'
     ? trade.size_usd * priceChangePct
     : trade.size_usd * -priceChangePct;
-  return directional - roundTripFeeUsd(trade.size_usd);
+  // 0005: funding carry accrued while open (see accrueFundingCarry). Without
+  // this the squeeze-scout thesis — "crowded shorts pay longs" — was invisible
+  // to the scoreboard: P&L measured price return only.
+  return directional + (trade.funding_accrued_usd ?? 0) - roundTripFeeUsd(trade.size_usd);
 }
 
 /**
@@ -89,7 +98,9 @@ export interface PaperTradeDeps {
   closeTrade: typeof closeTrade;
   getOpenTrades: typeof getOpenTrades;
   updateOpenTradePnl: typeof updateOpenTradePnl;
+  updateOpenTradeCarry: typeof updateOpenTradeCarry;
   getCryptoPrice: typeof getCryptoPrice;
+  getCryptoDerivatives: typeof getCryptoDerivatives;
   getPolymarketOrderbook: typeof getPolymarketOrderbook;
   now: () => number;
 }
@@ -99,7 +110,9 @@ const defaultDeps: PaperTradeDeps = {
   closeTrade,
   getOpenTrades,
   updateOpenTradePnl,
+  updateOpenTradeCarry,
   getCryptoPrice,
+  getCryptoDerivatives,
   getPolymarketOrderbook,
   now: () => Date.now(),
 };
@@ -213,9 +226,17 @@ export async function paperTradeOpen(
 
     // Scout sub-budget — scouts share 20% of cap so they can't crowd conviction trades.
     if (sizeClass === 'scout') {
-      const scoutExposure = openTrades
-        .filter((t) => t.size_class === 'scout')
-        .reduce((s, t) => s + t.size_usd, 0);
+      const openScouts = openTrades.filter((t) => t.size_class === 'scout');
+      // Correlation control: concurrent same-direction scouts in one regime are
+      // a single macro bet, not independent samples. Hard cap at 3.
+      if (openScouts.length >= MAX_CONCURRENT_SCOUTS) {
+        return err(
+          `Scout concurrency cap: ${openScouts.length} scouts already open (max ${MAX_CONCURRENT_SCOUTS}). ` +
+            `Concurrent scouts in the same regime are correlated — they validate nothing as a group. ` +
+            `Close one first, or add this to the watchlist with the trigger that would justify replacing an open scout.`,
+        );
+      }
+      const scoutExposure = openScouts.reduce((s, t) => s + t.size_usd, 0);
       const scoutCap = cap * SCOUT_EXPOSURE_FRACTION;
       if (scoutExposure + input.size_usd > scoutCap) {
         return err(
@@ -265,6 +286,8 @@ export async function paperTradeOpen(
       expected_holding_period: input.expected_holding_period ?? null,
       postmortem: null,
       size_class: sizeClass,
+      funding_accrued_usd: 0,
+      carry_accrued_at: null,
     });
 
     return ok(trade);
@@ -406,6 +429,65 @@ async function closeAt(
   const pnl = computePnl(trade, exitPrice);
   await deps.closeTrade(db, trade.id, exitPrice, pnl);
   summary.closed.push({ trade_id: trade.id, reason, exit_price: exitPrice, pnl_usd: pnl });
+}
+
+export interface CarryAccrualSummary {
+  accrued: number;
+  skipped: number;
+  errors: Array<{ trade_id: string; error: string }>;
+}
+
+const HOURS_PER_YEAR = 24 * 365;
+
+/**
+ * 0005: Accrue estimated perp funding carry on open crypto trades.
+ * Longs RECEIVE funding when the rate is negative (the squeeze-scout thesis)
+ * and pay when positive; shorts are the inverse. Uses the CURRENT annualized
+ * funding rate over the window since the last accrual — an approximation of
+ * the true 8h-settlement path, accurate enough at the monitor tick cadence
+ * (30min) relative to a $100 position.
+ * Runs BEFORE auto-close and mark-to-market each tick so computePnl sees
+ * up-to-date carry. Failures are per-trade and non-fatal (e.g. instruments
+ * with no OKX/Deribit perp simply never accrue).
+ */
+export async function accrueFundingCarry(
+  db: DB,
+  deps: PaperTradeDeps = defaultDeps,
+): Promise<CarryAccrualSummary> {
+  const summary: CarryAccrualSummary = { accrued: 0, skipped: 0, errors: [] };
+  const open = await deps.getOpenTrades(db);
+  const nowMs = deps.now();
+
+  for (const trade of open) {
+    try {
+      if (trade.instrument_kind !== 'crypto' || (trade.side !== 'buy' && trade.side !== 'sell')) {
+        summary.skipped++;
+        continue;
+      }
+      const sinceMs = new Date(trade.carry_accrued_at ?? trade.opened_at).getTime();
+      const hours = (nowMs - sinceMs) / 3_600_000;
+      if (!Number.isFinite(hours) || hours <= 0) {
+        summary.skipped++;
+        continue;
+      }
+      const deriv = await deps.getCryptoDerivatives(trade.instrument_id);
+      if (!deriv.ok) {
+        summary.skipped++;
+        continue;
+      }
+      const annualizedFrac = deriv.data.fundingRateAnnualizedPct / 100;
+      // Long pays positive funding / receives negative; short is the inverse.
+      const directionSign = trade.side === 'buy' ? -1 : 1;
+      const carryUsd = trade.size_usd * directionSign * annualizedFrac * (hours / HOURS_PER_YEAR);
+      const total = (trade.funding_accrued_usd ?? 0) + carryUsd;
+      await deps.updateOpenTradeCarry(db, trade.id, total, new Date(nowMs).toISOString());
+      summary.accrued++;
+    } catch (e) {
+      summary.errors.push({ trade_id: trade.id, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  return summary;
 }
 
 export interface MarkToMarketSummary {

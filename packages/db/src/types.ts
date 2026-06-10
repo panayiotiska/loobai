@@ -58,6 +58,10 @@ export interface Trade {
   postmortem: TradePostmortem | null;
   // 0004: tiered conviction gate. Scout = small/exploratory, conviction = full size.
   size_class: 'scout' | 'conviction';
+  // 0005: estimated perp funding accrued while open (longs receive when funding
+  // is negative, pay when positive; inverted for shorts). Included in pnl_usd.
+  funding_accrued_usd: number | null;
+  carry_accrued_at: string | null;
 }
 
 export interface TradePostmortem {

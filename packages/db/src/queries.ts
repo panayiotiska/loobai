@@ -217,6 +217,23 @@ export async function updateOpenTradePnl(
   if (error) throw new Error(`updateOpenTradePnl: ${error.message}`);
 }
 
+// 0005: persist accrued funding carry on an open trade. Carry is cumulative;
+// carry_accrued_at marks how far accrual has progressed so each sweep only
+// accrues the elapsed window since the last one.
+export async function updateOpenTradeCarry(
+  db: DB,
+  id: string,
+  fundingAccruedUsd: number,
+  carryAccruedAt: string,
+): Promise<void> {
+  const { error } = await db
+    .from('trades')
+    .update({ funding_accrued_usd: fundingAccruedUsd, carry_accrued_at: carryAccruedAt })
+    .eq('id', id)
+    .eq('status', 'open');
+  if (error) throw new Error(`updateOpenTradeCarry: ${error.message}`);
+}
+
 export interface PortfolioStats {
   openCount: number;
   closedCount: number;

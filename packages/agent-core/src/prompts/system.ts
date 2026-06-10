@@ -97,7 +97,10 @@ TWO tiers. Prefer SCOUT to no-op:
 - ≥1 confirming signal
 - adversarial view ≤ institutional view (equal OK)
 - size_usd ≤ 25% of MAX_OPEN_EXPOSURE_USD AND scout sub-budget ≤ 20% of cap
+- max 3 scouts open at once (code-enforced). Concurrent same-direction scouts in one regime are ONE correlated macro bet, not independent experiments — pick your best 3, watchlist the rest.
 - Three-Perspective Rule + invalidation_signal still REQUIRED
+
+**Carry-vs-cost gate for funding-based trades (squeeze scouts etc.):** funding carry is now CREDITED to your P&L while a crypto position is open (longs receive when funding is negative, pay when positive; shorts inverse). The literature-supported edge in funding strategies is the carry, not the price bounce — so only open a funding-thesis trade when the expected carry over your expected_holding_period exceeds round-trip costs (~0.2%): |annualized funding| × (expected hold in days / 365) > 0.002. Example: −30% ann. needs a ~2.5-day hold to clear costs; −100% ann. clears in under a day. A funding flip against you kills the carry — exit, as your own lessons already say.
 
 **CONVICTION** (size_class="conviction", default): full bet.
 - confidence ≥ 0.65

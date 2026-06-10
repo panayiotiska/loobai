@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { Trade } from '@loob/db';
 import {
+  accrueFundingCarry,
   autoCloseTriggeredTrades,
+  computePnl,
   markOpenTradesToMarket,
   type PaperTradeDeps,
 } from '../paper-trade.js';
@@ -37,6 +39,8 @@ function tradeFixture(overrides: Partial<Trade> = {}): Trade {
     expected_holding_period: null,
     postmortem: null,
     size_class: 'conviction',
+    funding_accrued_usd: 0,
+    carry_accrued_at: null,
     ...overrides,
   };
 }
@@ -47,6 +51,9 @@ function makeDeps(overrides: Partial<PaperTradeDeps> = {}): PaperTradeDeps {
     closeTrade: async () => undefined,
     getOpenTrades: async () => [],
     updateOpenTradePnl: async () => undefined,
+    updateOpenTradeCarry: async () => undefined,
+    getCryptoDerivatives: async () =>
+      err('no derivatives in test fixture — accrual skips this trade'),
     getCryptoPrice: async (symbol) =>
       ok({ symbol, priceUsd: 100, change24hPct: 0, marketCapUsd: 0, volumeUsd24h: 0 }),
     getPolymarketOrderbook: async (slug, outcome) =>
@@ -353,5 +360,90 @@ describe('markOpenTradesToMarket', () => {
     const summary = await markOpenTradesToMarket(FAKE_DB, deps);
     expect(summary.updated).toBe(0);
     expect(summary.skipped).toBe(1);
+  });
+});
+
+describe('accrueFundingCarry', () => {
+  const derivFixture = (annualizedPct: number) =>
+    ok({
+      symbol: 'BTC',
+      source: 'okx',
+      fundingRatePct: annualizedPct / 1095,
+      fundingRateAnnualizedPct: annualizedPct,
+      openInterestBase: 0,
+      openInterestUsd: 0,
+      markPrice: 100,
+      timestamp: new Date().toISOString(),
+    } as never);
+
+  it('credits a long when funding is negative (the squeeze-scout thesis)', async () => {
+    // $1000 long, -87.6% annualized funding, 10h elapsed → +$1.00 carry.
+    const openedAt = new Date('2026-06-10T00:00:00Z');
+    const nowMs = openedAt.getTime() + 10 * 3_600_000;
+    const carries: Array<{ total: number }> = [];
+    const deps = makeDeps({
+      getOpenTrades: async () => [
+        tradeFixture({ side: 'buy', size_usd: 1000, opened_at: openedAt.toISOString() }),
+      ],
+      getCryptoDerivatives: async () => derivFixture(-87.6),
+      updateOpenTradeCarry: async (_db, _id, total) => {
+        carries.push({ total });
+      },
+      now: () => nowMs,
+    });
+    const summary = await accrueFundingCarry(FAKE_DB, deps);
+    expect(summary.accrued).toBe(1);
+    expect(carries[0].total).toBeCloseTo(1.0, 2);
+  });
+
+  it('debits a short when funding is negative, and accumulates onto prior carry', async () => {
+    const accruedAt = new Date('2026-06-10T00:00:00Z');
+    const nowMs = accruedAt.getTime() + 10 * 3_600_000;
+    const carries: Array<{ total: number }> = [];
+    const deps = makeDeps({
+      getOpenTrades: async () => [
+        tradeFixture({
+          side: 'sell',
+          size_usd: 1000,
+          funding_accrued_usd: 0.5,
+          carry_accrued_at: accruedAt.toISOString(),
+        }),
+      ],
+      getCryptoDerivatives: async () => derivFixture(-87.6),
+      updateOpenTradeCarry: async (_db, _id, total) => {
+        carries.push({ total });
+      },
+      now: () => nowMs,
+    });
+    const summary = await accrueFundingCarry(FAKE_DB, deps);
+    expect(summary.accrued).toBe(1);
+    expect(carries[0].total).toBeCloseTo(0.5 - 1.0, 2);
+  });
+
+  it('skips non-crypto trades and trades whose derivatives fetch fails', async () => {
+    const deps = makeDeps({
+      getOpenTrades: async () => [
+        tradeFixture({ instrument_kind: 'polymarket', side: 'yes' }),
+        tradeFixture({ id: 't2' }), // getCryptoDerivatives default fixture errs
+      ],
+    });
+    const summary = await accrueFundingCarry(FAKE_DB, deps);
+    expect(summary.accrued).toBe(0);
+    expect(summary.skipped).toBe(2);
+    expect(summary.errors).toHaveLength(0);
+  });
+});
+
+describe('computePnl with funding carry', () => {
+  it('adds accrued carry to directional pnl minus fees', () => {
+    // Flat price: directional = 0, fees = $2 (10bps round trip on $1000),
+    // carry = +$3 → pnl = +$1.
+    const trade = tradeFixture({ funding_accrued_usd: 3 });
+    expect(computePnl(trade, 100)).toBeCloseTo(1.0, 6);
+  });
+
+  it('treats missing carry as zero (pre-0005 rows)', () => {
+    const trade = tradeFixture({ funding_accrued_usd: null });
+    expect(computePnl(trade, 100)).toBeCloseTo(-2.0, 6);
   });
 });

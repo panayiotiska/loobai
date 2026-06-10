@@ -42,6 +42,8 @@ function tradeFixture(overrides: Partial<Trade> = {}): Trade {
     expected_holding_period: null,
     postmortem: null,
     size_class: 'conviction',
+    funding_accrued_usd: 0,
+    carry_accrued_at: null,
     ...overrides,
   };
 }
@@ -69,6 +71,9 @@ function makeDeps(overrides: Partial<PaperTradeDeps> = {}): PaperTradeDeps {
     closeTrade: async () => undefined,
     getOpenTrades: async () => [],
     updateOpenTradePnl: async () => undefined,
+    updateOpenTradeCarry: async () => undefined,
+    getCryptoDerivatives: async () =>
+      err('no derivatives in test fixture — accrual skips this trade'),
     getCryptoPrice: async (symbol) =>
       ok({ symbol, priceUsd: 100, change24hPct: 0, marketCapUsd: 0, volumeUsd24h: 0 }),
     getPolymarketOrderbook: async (slug, outcome) =>

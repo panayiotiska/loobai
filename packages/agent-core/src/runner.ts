@@ -17,7 +17,7 @@ import {
 import { buildSystemPrompt } from './prompts/system.js';
 import { runGeminiLoop, buildToolHandlersForRun } from './gemini-loop.js';
 import { buildToolDeclarations } from './tools/index.js';
-import { autoCloseTriggeredTrades, markOpenTradesToMarket } from './tools/paper-trade.js';
+import { accrueFundingCarry, autoCloseTriggeredTrades, markOpenTradesToMarket } from './tools/paper-trade.js';
 import { sendTelegramSummary, sendTelegramError } from './telegram.js';
 import pino from 'pino';
 
@@ -66,6 +66,18 @@ export async function runTick(kind: RunKind): Promise<void> {
     // already hit TP/SL/time_limit are closed without depending on the agent's memory.
     // A transient Supabase/network blip here must not kill the whole tick — the
     // sweeps are best-effort, and the LLM still has its own paper_trade_close tool.
+    // Accrue funding carry FIRST so auto-close and mark-to-market compute P&L
+    // with up-to-date carry. The squeeze-scout thesis is funding-based — without
+    // this the scoreboard never measured the mechanism the strategy trades on.
+    try {
+      const carry = await accrueFundingCarry(db);
+      if (carry.accrued || carry.errors.length) {
+        log.info({ msg: 'funding carry accrued', runId: run.id, accrued: carry.accrued, skipped: carry.skipped, errors: carry.errors.length });
+      }
+    } catch (e) {
+      log.warn({ msg: 'funding carry sweep skipped', runId: run.id, err: String(e) });
+    }
+
     try {
       const autoClose = await autoCloseTriggeredTrades(db);
       if (autoClose.closed.length || autoClose.errors.length) {

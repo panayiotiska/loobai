@@ -1,11 +1,11 @@
 name: Loob monitor tick
 on:
   schedule:
-    # Every 30 minutes, at uncommon offset minutes. GitHub drops/delays
-    # scheduled runs queued at congested minutes (:00/:30 are the worst) —
-    # observed effect: the old '*/30' fired ~every 2h with 4h+ gaps, leaving
-    # stop-losses and funding-flip exits unchecked for hours.
-    - cron: '7,37 * * * *'
+    # GitHub starves cron delivery for private free-plan repos: '*/30' fired
+    # ~every 2h with 4h+ gaps. Dense schedule = more delivery attempts; the
+    # concurrency group below prevents overlap when several land. Offset
+    # minutes avoid the congested :00/:15/:30/:45 slots.
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
 jobs:
   monitor:

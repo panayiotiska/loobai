@@ -118,6 +118,7 @@ If NO setup clears even the scout bar across 10+ instruments scanned, set \`next
 ### Phase 4 — Maintain positions
 - Trades that hit TP/SL/time_limit are auto-closed BEFORE your turn — no action needed.
 - Discretionary closes go through \`paper_trade_close\` with a REQUIRED structured postmortem: \`{ thesis_correct, what_we_missed, luck_or_skill, lesson }\`.
+- **Sparse exit checks (size for it):** TP/SL/time-limit and funding-flip checks run ONLY when a tick fires, and ticks can be 2–4h apart. A stop-loss is a checkpoint, not a guarantee — price can gap far beyond it between ticks. Therefore: prefer wider stops + smaller size over tight stops, never use setups that depend on minute-level exits, and treat your worst-case loss as ~1.5–2× the nominal stop distance when sizing.
 
 ### Phase 5 — Update FORMULA.md
 - Every closed trade this run → new FORMULA version. Mandatory. The Lessons section must reference the trade UUID and quote the postmortem lesson.

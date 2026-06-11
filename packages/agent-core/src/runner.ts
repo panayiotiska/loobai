@@ -15,7 +15,7 @@ import {
 } from '@loob/db';
 
 import { buildSystemPrompt } from './prompts/system.js';
-import { runGeminiLoop, buildToolHandlersForRun } from './gemini-loop.js';
+import { runGeminiLoop, buildToolHandlersForRun, isTransientGeminiError } from './gemini-loop.js';
 import { buildToolDeclarations } from './tools/index.js';
 import { accrueFundingCarry, autoCloseTriggeredTrades, markOpenTradesToMarket } from './tools/paper-trade.js';
 import { sendTelegramSummary, sendTelegramError } from './telegram.js';
@@ -117,17 +117,38 @@ export async function runTick(kind: RunKind): Promise<void> {
     const toolDeclarations = buildToolDeclarations();
     const toolHandlers = buildToolHandlersForRun(db, run.id);
 
-    const result = await runGeminiLoop({
-      systemPrompt,
-      toolDeclarations,
-      toolHandlers,
-      maxIterations: MAX_ITERATIONS[kind],
-      runId: run.id,
-      db,
-      // Research runs must not silently end with zero positions opened — the loop
-      // injects an explicit open-or-skip decision turn if the agent trails off.
-      enforceTradeDecision: kind === 'research',
-    });
+    let result;
+    try {
+      result = await runGeminiLoop({
+        systemPrompt,
+        toolDeclarations,
+        toolHandlers,
+        maxIterations: MAX_ITERATIONS[kind],
+        runId: run.id,
+        db,
+        // Research runs must not silently end with zero positions opened — the loop
+        // injects an explicit open-or-skip decision turn if the agent trails off.
+        enforceTradeDecision: kind === 'research',
+      });
+    } catch (e) {
+      // Monitor ticks: the safety-critical work (funding carry accrual,
+      // auto-close, mark-to-market) already ran above, BEFORE the LLM call.
+      // If Gemini is having a transient outage that outlasts the full retry
+      // budget, degrade to a sweeps-only tick instead of failing the run and
+      // paging Telegram. Research ticks still fail loudly — the LLM IS the run.
+      if (kind === 'monitor' && isTransientGeminiError(e)) {
+        log.warn({ msg: 'LLM unavailable — degrading monitor tick to sweeps-only', runId: run.id, err: String(e).slice(0, 300) });
+        await updateRun(db, run.id, {
+          status: 'success',
+          finished_at: new Date().toISOString(),
+          summary:
+            'Degraded monitor tick: Gemini unavailable after full retry budget. ' +
+            'Deterministic sweeps (funding carry, auto-close, mark-to-market) completed; discretionary review skipped this tick.',
+        });
+        return;
+      }
+      throw e;
+    }
 
     const { tokenUsage, costUsd } = result;
     finalJson = result.finalJson;

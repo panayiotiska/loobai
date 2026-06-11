@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeJsonBlock, computeLlmCostUsd, parseRunOutput } from '../gemini-loop.js';
+import { sanitizeJsonBlock, computeLlmCostUsd, parseRunOutput, isTransientGeminiError } from '../gemini-loop.js';
 
 describe('sanitizeJsonBlock', () => {
   it('replaces bare undefined values with null so JSON.parse succeeds', () => {
@@ -95,5 +95,30 @@ describe('parseRunOutput salvage', () => {
       nextRunFocus: 'x',
     }) + '\n```';
     expect(parseRunOutput(text).confidenceInThesis).toBe(1);
+  });
+});
+
+describe('isTransientGeminiError', () => {
+  it('classifies retryable HTTP statuses', () => {
+    for (const status of [408, 429, 500, 502, 503, 504]) {
+      expect(isTransientGeminiError({ status })).toBe(true);
+    }
+    for (const status of [400, 401, 403, 404]) {
+      expect(isTransientGeminiError({ status })).toBe(false);
+    }
+  });
+
+  it('classifies network-level errors by message', () => {
+    expect(isTransientGeminiError(new Error('fetch failed'))).toBe(true);
+    expect(isTransientGeminiError(new Error('read ECONNRESET'))).toBe(true);
+    expect(isTransientGeminiError(new Error('socket hang up'))).toBe(true);
+    expect(isTransientGeminiError(new Error('invalid api key'))).toBe(false);
+  });
+
+  it('falls back to the embedded JSON code when status is absent (ApiError shape)', () => {
+    const apiError = new Error('{"error":{"code":500,"message":"Internal error encountered.","status":"INTERNAL"}}');
+    expect(isTransientGeminiError(apiError)).toBe(true);
+    const badRequest = new Error('{"error":{"code":400,"message":"Invalid argument.","status":"INVALID_ARGUMENT"}}');
+    expect(isTransientGeminiError(badRequest)).toBe(false);
   });
 });

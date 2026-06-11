@@ -45,6 +45,51 @@ const DEFAULT_TOOL_CAP = 12;
 // Keep history bounded — observed prod spike was 216k input tokens in one run.
 const MAX_HISTORY_ENTRIES = 24;
 
+// Transient upstream failures worth retrying (and, for monitor ticks, degrading
+// on): retryable HTTP statuses plus node-level network errors. @google/genai's
+// ApiError carries .status; when absent (network layer) fall back to message
+// sniffing, including the JSON body some ApiErrors embed the code in.
+const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const TRANSIENT_MESSAGE_RE =
+  /fetch failed|network|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|UND_ERR|terminated|aborted/i;
+
+export function isTransientGeminiError(e: unknown): boolean {
+  const status = (e as { status?: number }).status;
+  if (typeof status === 'number') return TRANSIENT_STATUSES.has(status);
+  const msg = e instanceof Error ? `${e.message} ${String(e.cause ?? '')}` : String(e);
+  if (TRANSIENT_MESSAGE_RE.test(msg)) return true;
+  const embedded = msg.match(/"code"\s*:\s*(\d{3})/);
+  return embedded ? TRANSIENT_STATUSES.has(Number(embedded[1])) : false;
+}
+
+// 5 attempts spanning ~3.6min + jitter. The old 3-attempt/45s window was
+// shorter than a routine Gemini blip — observed 2026-06-10T23:39Z: 500s
+// outlasted all retries and failed a monitor tick.
+const RETRY_DELAYS_MS = [10_000, 25_000, 60_000, 120_000];
+
+async function generateWithRetry<T>(
+  call: () => Promise<T>,
+  ctx: { runId: string; phase: string },
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await call();
+    } catch (e) {
+      if (attempt >= RETRY_DELAYS_MS.length || !isTransientGeminiError(e)) throw e;
+      const delay = RETRY_DELAYS_MS[attempt] + Math.floor(Math.random() * 5000);
+      log.warn({
+        msg: 'gemini transient error, retrying',
+        runId: ctx.runId,
+        phase: ctx.phase,
+        attempt,
+        delay,
+        err: String(e).slice(0, 300),
+      });
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
 export interface GeminiLoopInput {
   systemPrompt: string;
   toolDeclarations: FunctionDeclaration[];
@@ -126,10 +171,9 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
     pruneHistory(history);
     log.info({ msg: 'gemini iteration', runId: input.runId, iteration });
 
-    let response;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        response = await genai.models.generateContent({
+    const response = await generateWithRetry(
+      () =>
+        genai.models.generateContent({
           model: GEMINI_MODEL,
           contents: history,
           config: {
@@ -137,20 +181,9 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
             tools: [{ functionDeclarations: input.toolDeclarations }],
             temperature: 0.7,
           },
-        });
-        break;
-      } catch (e) {
-        const status = (e as { status?: number }).status;
-        if ((status === 503 || status === 500 || status === 429) && attempt < 2) {
-          const delay = (attempt + 1) * 15000;
-          log.warn({ msg: 'gemini transient error, retrying', runId: input.runId, attempt, status, delay });
-          await new Promise((r) => setTimeout(r, delay));
-        } else {
-          throw e;
-        }
-      }
-    }
-    if (!response) throw new Error('Gemini request failed after retries');
+        }),
+      { runId: input.runId, phase: 'tool-loop' },
+    );
 
     totalInputTokens += response.usageMetadata?.promptTokenCount ?? 0;
     totalOutputTokens += response.usageMetadata?.candidatesTokenCount ?? 0;
@@ -294,10 +327,9 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
       ],
     });
 
-    let wrapupResponse;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        wrapupResponse = await genai.models.generateContent({
+    const wrapupResponse = await generateWithRetry(
+      () =>
+        genai.models.generateContent({
           model: GEMINI_MODEL,
           contents: history,
           config: {
@@ -305,17 +337,9 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
             // No tools — force a text-only response.
             temperature: 0.3,
           },
-        });
-        break;
-      } catch (e) {
-        const status = (e as { status?: number }).status;
-        if ((status === 503 || status === 500 || status === 429) && attempt < 2) {
-          await new Promise((r) => setTimeout(r, (attempt + 1) * 15000));
-        } else {
-          throw e;
-        }
-      }
-    }
+        }),
+      { runId: input.runId, phase: 'wrap-up' },
+    );
     if (wrapupResponse) {
       totalInputTokens += wrapupResponse.usageMetadata?.promptTokenCount ?? 0;
       totalOutputTokens += wrapupResponse.usageMetadata?.candidatesTokenCount ?? 0;

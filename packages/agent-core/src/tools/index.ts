@@ -1,7 +1,8 @@
 import type { GoogleGenAI, FunctionDeclaration } from '@google/genai';
 import { Type } from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getRecentRuns, getAllFormulaVersions, getPortfolioStats, getToolHealth } from '@loob/db';
+import { getRecentRuns, getAllFormulaVersions, getPortfolioStats, getToolHealth, getSetupBreakdown } from '@loob/db';
+import type { SetupType } from '@loob/db';
 import { searchNews } from './news-search.js';
 import {
   getCryptoPrice,
@@ -28,6 +29,8 @@ import {
   type FundingTier,
 } from './microstructure.js';
 import { getClosedTradesWithPostmortems } from '@loob/db';
+import { getTrendSignal } from './trend.js';
+import { sizingTierForSetup, maxAllowedSize } from '../sizing.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DB = SupabaseClient<any>;
@@ -226,7 +229,7 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
     },
     {
       name: 'paper_trade_open',
-      description: 'Open a paper (simulated) position. TWO size classes: size_class="scout" (small, exploratory: confidence ≥ 0.55, ≥1 confirming signal, hard size cap 25% of MAX exposure, scout sub-budget 20%) — use when you see a plausible edge but the full conviction bar is not met. size_class="conviction" (full size: confidence ≥ 0.65, ≥2 confirming signals, max size = cap × confidence²). BOTH still require retail_view / institutional_view / adversarial_view (≥20 chars each), invalidation_signal, regime_at_entry. Scouts are how you learn — open them.',
+      description: 'Open a paper (simulated) position. REQUIRES setup_type — the setup\'s defining condition is verified server-side against live market data and the call is rejected with the reason if it does not hold (read the error and act on it; do not retry the same args). Sizing is code-decided per setup via the sizing ladder shown in get_portfolio_stats — propose a size ≤ the allowed base, never below $100. TWO size classes: size_class="scout" (confidence ≥ 0.55, ≥1 confirming signal) or size_class="conviction" (confidence ≥ 0.65, ≥2 confirming signals). BOTH require retail_view / institutional_view / adversarial_view (≥20 chars each), invalidation_signal, regime_at_entry.',
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -234,17 +237,19 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
           instrument_id: { type: Type.STRING, description: 'Instrument identifier, e.g. "BTC" or Polymarket market slug' },
           instrument_label: { type: Type.STRING, description: 'Human-readable label (optional)' },
           side: { type: Type.STRING, description: '"buy", "sell", "yes", or "no"' },
-          size_usd: { type: Type.NUMBER, description: 'Position size in USD' },
-          size_class: { type: Type.STRING, description: '"scout" (0.55+ conf, ≥1 signal, ≤25% of cap) or "conviction" (0.65+ conf, ≥2 signals, conf² sizing). Default "conviction".' },
+          size_usd: { type: Type.NUMBER, description: 'Position size in USD. Minimum $100. Max = the setup\'s sizing-ladder base (see get_portfolio_stats).' },
+          size_class: { type: Type.STRING, description: '"scout" (0.55+ conf, ≥1 signal) or "conviction" (0.65+ conf, ≥2 signals). Default "conviction".' },
+          setup_type: { type: Type.STRING, description: 'REQUIRED. "S1_funding_squeeze" (long crypto, annualized funding ≤ −30%, verified live), "S2_carry_harvest" (annualized funding ≥ +30%, side="sell", code models it delta-neutral — PnL is the funding stream), "S3_trend_breakout" (donchian 20/55 breakout + volume ≥ 1.25× 20d avg, verified via get_trend_signal), or "D_discretionary" (anything else — scout size only).' },
           thesis: { type: Type.STRING, description: 'One-line summary of the setup' },
-          confidence: { type: Type.NUMBER, description: 'Scout: 0.55-1.0. Conviction: 0.65-1.0. For conviction trades max size = cap × confidence² (0.7→49%, 0.8→64%, 0.9→81%). For scouts size is capped at 25% of cap regardless.' },
+          confidence: { type: Type.NUMBER, description: 'Scout: 0.55-1.0. Conviction: 0.65-1.0. Confidence ≥0.65 unlocks the full sizing-ladder base; 0.55-0.65 gets half. Do not inflate confidence to unlock size — the ladder keys off realized results.' },
           exit_criteria: {
             type: Type.OBJECT,
-            description: 'Exit conditions',
+            description: 'Exit conditions. Prefer trailing_stop_pct over a tight take_profit — let winners run.',
             properties: {
-              take_profit: { type: Type.NUMBER, description: 'Price to take profit at' },
+              take_profit: { type: Type.NUMBER, description: 'Price to take profit at (optional — trailing stops usually beat fixed TPs)' },
               stop_loss: { type: Type.NUMBER, description: 'Price to stop loss at' },
               time_limit: { type: Type.STRING, description: 'ISO date after which to exit regardless' },
+              trailing_stop_pct: { type: Type.NUMBER, description: 'Close when price retraces this % from its best level since entry. Use ≥1.5 (tick cadence is 2-4h). For S3 use get_trend_signal.suggestedTrailingStopPct; for S1 use 1.5-2.5.' },
               conditions: { type: Type.STRING, description: 'Any other exit conditions in plain text' },
             },
           },
@@ -268,7 +273,7 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
           expected_holding_period: { type: Type.STRING, description: 'Rough horizon, e.g. "intraday", "3-7 days", "until resolution".' },
         },
         required: [
-          'instrument_kind', 'instrument_id', 'side', 'size_usd', 'thesis', 'confidence', 'exit_criteria',
+          'instrument_kind', 'instrument_id', 'side', 'size_usd', 'setup_type', 'thesis', 'confidence', 'exit_criteria',
           'regime_at_entry', 'retail_view', 'institutional_view', 'adversarial_view', 'confirming_signals', 'invalidation_signal',
         ],
       },
@@ -355,11 +360,22 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
     },
     {
       name: 'get_portfolio_stats',
-      description: 'Get quantitative performance stats across all paper trades: win rate, realized PnL, open exposure, biggest win/loss, plus the cumulative PnL curve. Use this to self-grade the current formula against actual results.',
+      description: 'Get quantitative performance stats across all paper trades: win rate, realized PnL, open exposure, biggest win/loss, the cumulative PnL curve, AND the per-setup breakdown (n, expectancy, profit factor, current sizing-ladder tier and allowed base size for S1/S2/S3/D). Use this to self-grade the current formula against actual results and to know what size each setup has earned.',
       parameters: {
         type: Type.OBJECT,
         properties: {},
         required: [],
+      },
+    },
+    {
+      name: 'get_trend_signal',
+      description: 'Compute the S3 trend-breakout verdict for a crypto symbol from daily OHLC — donchian 20/55 breakout state (vs prior extremes), ATR(14) and ATR%, 20d realized vol, volume vs 20d average, MA20/50 alignment, and a suggested trailing stop %. All the math is done in code; call this BEFORE any S3_trend_breakout trade (the same computation is used to verify the entry server-side) and seed exit_criteria.trailing_stop_pct from suggestedTrailingStopPct.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          symbol: { type: Type.STRING, description: 'Crypto symbol, e.g. "BTC", "SOL"' },
+        },
+        required: ['symbol'],
       },
     },
   ];
@@ -486,6 +502,9 @@ export function buildToolHandlers(
         side: args.side as 'buy' | 'sell' | 'yes' | 'no',
         size_usd: Number(args.size_usd),
         size_class: (args.size_class === 'scout' ? 'scout' : 'conviction') as 'scout' | 'conviction',
+        // Passed through raw — setup validation owns bad values so the model
+        // gets an instructive rejection instead of a silent default.
+        setup_type: args.setup_type != null ? String(args.setup_type) : undefined,
         thesis: String(args.thesis),
         confidence: args.confidence != null ? Number(args.confidence) : null,
         exit_criteria: (args.exit_criteria ?? {}) as Record<string, unknown>,
@@ -593,12 +612,33 @@ export function buildToolHandlers(
 
     get_portfolio_stats: async () => {
       try {
-        const stats = await getPortfolioStats(db);
+        const [stats, breakdown] = await Promise.all([getPortfolioStats(db), getSetupBreakdown(db)]);
+        // Per-setup view with the sizing-ladder tier — the SAME computation
+        // paper_trade_open enforces, so what the agent reads is what code clamps.
+        const setups = Object.fromEntries(
+          (Object.keys(breakdown) as SetupType[]).map((setup) => {
+            const tier = sizingTierForSetup(breakdown[setup]);
+            return [
+              setup,
+              {
+                ...breakdown[setup],
+                sizingTier: tier.tier,
+                allowedBaseUsd: tier.baseUsd,
+                allowedScoutBandUsd: maxAllowedSize(tier.baseUsd, 0.55),
+                ladder: tier.reason,
+              },
+            ];
+          }),
+        );
         // Trim the curve in the tool response — agent doesn't need every point
-        return { ok: true, data: { ...stats, pnlCurve: stats.pnlCurve.slice(-30) } };
+        return { ok: true, data: { ...stats, pnlCurve: stats.pnlCurve.slice(-30), setups } };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
+    },
+
+    get_trend_signal: async (args) => {
+      return getTrendSignal(String(args.symbol));
     },
   };
 }

@@ -9,6 +9,7 @@ import type {
   AgentRequest,
   SystemState,
   ToolCall,
+  SetupType,
 } from './types.js';
 
 // Using SupabaseClient without Database generic here keeps things simple.
@@ -232,6 +233,111 @@ export async function updateOpenTradeCarry(
     .eq('id', id)
     .eq('status', 'open');
   if (error) throw new Error(`updateOpenTradeCarry: ${error.message}`);
+}
+
+// 0006: trailing stops — persist the favorable price extreme since entry.
+export async function updateOpenTradePeak(db: DB, id: string, peakPrice: number): Promise<void> {
+  const { error } = await db
+    .from('trades')
+    .update({ peak_price: peakPrice })
+    .eq('id', id)
+    .eq('status', 'open');
+  if (error) throw new Error(`updateOpenTradePeak: ${error.message}`);
+}
+
+// 0006: breakeven ratchet — the carry sweep tightens stop_loss in place when an
+// S1 trade's funding flips positive. Writes the whole exit_criteria jsonb.
+export async function updateOpenTradeExitCriteria(
+  db: DB,
+  id: string,
+  exitCriteria: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await db
+    .from('trades')
+    .update({ exit_criteria: exitCriteria })
+    .eq('id', id)
+    .eq('status', 'open');
+  if (error) throw new Error(`updateOpenTradeExitCriteria: ${error.message}`);
+}
+
+// 0006: per-setup performance over each setup's most recent closed trades.
+// Feeds both the agent's get_portfolio_stats view and the code sizing ladder —
+// same numbers, single source.
+export interface SetupStats {
+  n: number;
+  totalPnlUsd: number;
+  winRate: number | null;
+  avgWinUsd: number | null;
+  avgLossUsd: number | null;
+  /** gross wins / |gross losses|; Infinity when there are wins and no losses. */
+  profitFactor: number | null;
+  expectancyUsd: number | null;
+}
+
+export type SetupBreakdown = Record<SetupType, SetupStats>;
+
+const SETUP_TYPES: SetupType[] = [
+  'S1_funding_squeeze',
+  'S2_carry_harvest',
+  'S3_trend_breakout',
+  'D_discretionary',
+];
+
+export function computeSetupStats(pnls: number[]): SetupStats {
+  const n = pnls.length;
+  if (n === 0) {
+    return {
+      n: 0,
+      totalPnlUsd: 0,
+      winRate: null,
+      avgWinUsd: null,
+      avgLossUsd: null,
+      profitFactor: null,
+      expectancyUsd: null,
+    };
+  }
+  const wins = pnls.filter((p) => p > 0);
+  const losses = pnls.filter((p) => p < 0);
+  const grossWin = wins.reduce((s, p) => s + p, 0);
+  const grossLoss = Math.abs(losses.reduce((s, p) => s + p, 0));
+  const total = pnls.reduce((s, p) => s + p, 0);
+  return {
+    n,
+    totalPnlUsd: total,
+    winRate: wins.length / n,
+    avgWinUsd: wins.length ? grossWin / wins.length : null,
+    avgLossUsd: losses.length ? -grossLoss / losses.length : null,
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : wins.length ? Infinity : null,
+    expectancyUsd: total / n,
+  };
+}
+
+export async function getSetupBreakdown(db: DB, windowPerSetup = 30): Promise<SetupBreakdown> {
+  const { data, error } = await db
+    .from('trades')
+    .select('setup_type, pnl_usd, closed_at')
+    .eq('status', 'closed')
+    .not('pnl_usd', 'is', null)
+    .order('closed_at', { ascending: false })
+    .limit(windowPerSetup * SETUP_TYPES.length * 4);
+  if (error) throw new Error(`getSetupBreakdown: ${error.message}`);
+
+  const rows = (data ?? []) as Array<{ setup_type: SetupType | null; pnl_usd: number }>;
+  const bySetup = new Map<SetupType, number[]>();
+  for (const row of rows) {
+    const setup: SetupType = row.setup_type ?? 'D_discretionary';
+    const list = bySetup.get(setup) ?? [];
+    if (list.length < windowPerSetup) {
+      list.push(row.pnl_usd);
+      bySetup.set(setup, list);
+    }
+  }
+
+  const breakdown = {} as SetupBreakdown;
+  for (const setup of SETUP_TYPES) {
+    breakdown[setup] = computeSetupStats(bySetup.get(setup) ?? []);
+  }
+  return breakdown;
 }
 
 export interface PortfolioStats {

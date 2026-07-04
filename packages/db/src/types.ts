@@ -29,6 +29,14 @@ export interface Note {
   created_at: string;
 }
 
+// 0006: code-enforced setup taxonomy. The defining condition of each setup is
+// verified server-side at open time (see agent-core setup-validation).
+export type SetupType =
+  | 'S1_funding_squeeze'
+  | 'S2_carry_harvest'
+  | 'S3_trend_breakout'
+  | 'D_discretionary';
+
 export interface Trade {
   id: string;
   run_id: string | null;
@@ -62,6 +70,12 @@ export interface Trade {
   // is negative, pay when positive; inverted for shorts). Included in pnl_usd.
   funding_accrued_usd: number | null;
   carry_accrued_at: string | null;
+  // 0006: setup taxonomy + smarter exits
+  setup_type: SetupType;
+  // Delta-neutral carry position: PnL = funding accrual − doubled fees, no price leg.
+  hedged: boolean;
+  // Favorable price extreme since entry (max for longs, min for shorts); trailing stops.
+  peak_price: number | null;
 }
 
 export interface TradePostmortem {

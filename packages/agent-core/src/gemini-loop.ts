@@ -39,6 +39,8 @@ const PER_RUN_TOOL_CAPS: Record<string, number> = {
   get_long_short_ratio: 6,
   get_liquidation_zones: 6,
   detect_manipulation_signals: 6,
+  // v3: S3 breakout math — enough for a breadth pass over candidates.
+  get_trend_signal: 8,
 };
 const DEFAULT_TOOL_CAP = 12;
 

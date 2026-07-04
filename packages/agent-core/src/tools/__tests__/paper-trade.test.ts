@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { Trade } from '@loob/db';
+import type { Trade, SetupBreakdown } from '@loob/db';
+import { computeSetupStats } from '@loob/db';
 import {
   paperTradeOpen,
   paperTradeClose,
@@ -44,9 +45,24 @@ function tradeFixture(overrides: Partial<Trade> = {}): Trade {
     size_class: 'conviction',
     funding_accrued_usd: 0,
     carry_accrued_at: null,
+    setup_type: 'D_discretionary',
+    hedged: false,
+    peak_price: null,
     ...overrides,
   };
 }
+
+function breakdownFixture(pnlsPerSetup: Partial<Record<keyof SetupBreakdown, number[]>> = {}): SetupBreakdown {
+  return {
+    S1_funding_squeeze: computeSetupStats(pnlsPerSetup.S1_funding_squeeze ?? []),
+    S2_carry_harvest: computeSetupStats(pnlsPerSetup.S2_carry_harvest ?? []),
+    S3_trend_breakout: computeSetupStats(pnlsPerSetup.S3_trend_breakout ?? []),
+    D_discretionary: computeSetupStats(pnlsPerSetup.D_discretionary ?? []),
+  };
+}
+
+// 30 closed trades, PF well over 1.5, positive expectancy → sizing tier 4 ($1000).
+const TIER4_PNLS = [...Array(20).fill(10), ...Array(10).fill(-1)];
 
 // v2 paper_trade_open requires structured adversarial rationale. This helper
 // returns a complete-enough payload so the trade actually opens.
@@ -72,6 +88,9 @@ function makeDeps(overrides: Partial<PaperTradeDeps> = {}): PaperTradeDeps {
     getOpenTrades: async () => [],
     updateOpenTradePnl: async () => undefined,
     updateOpenTradeCarry: async () => undefined,
+    updateOpenTradePeak: async () => undefined,
+    updateOpenTradeExitCriteria: async () => undefined,
+    getSetupBreakdown: async () => breakdownFixture(),
     getCryptoDerivatives: async () =>
       err('no derivatives in test fixture — accrual skips this trade'),
     getCryptoPrice: async (symbol) =>
@@ -91,6 +110,9 @@ function makeDeps(overrides: Partial<PaperTradeDeps> = {}): PaperTradeDeps {
         asks: [],
         timestamp: new Date().toISOString(),
       }),
+    // Tests exercise the gates around setup validation, not the validation
+    // itself (see setup-validation.test.ts) — default fake passes through.
+    validateSetup: async () => ok({ setupType: 'D_discretionary' as const, hedged: false }),
     now: () => Date.now(),
     ...overrides,
   };
@@ -239,7 +261,7 @@ describe('paperTradeOpen — scout tier', () => {
       instrument_kind: 'crypto',
       instrument_id: 'SUI',
       side: 'sell',
-      size_usd: 500,
+      size_usd: 100,
       size_class: 'scout',
       thesis: 'crowded longs on SUI',
       confidence: 0.58,
@@ -263,7 +285,7 @@ describe('paperTradeOpen — scout tier', () => {
       instrument_kind: 'crypto',
       instrument_id: 'SUI',
       side: 'sell',
-      size_usd: 500,
+      size_usd: 100,
       size_class: 'scout',
       thesis: 't',
       confidence: 0.50,
@@ -275,13 +297,13 @@ describe('paperTradeOpen — scout tier', () => {
   });
 
   it('scout rejects size over 25% of cap', async () => {
-    process.env.MAX_OPEN_EXPOSURE_USD = '10000'; // scout per-trade cap = $2500
+    process.env.MAX_OPEN_EXPOSURE_USD = '300'; // scout per-trade cap = $75 < $100 ladder floor
     const deps = makeDeps();
     const r = await paperTradeOpen(FAKE_DB, 'r1', {
       instrument_kind: 'crypto',
       instrument_id: 'SUI',
       side: 'sell',
-      size_usd: 3000,
+      size_usd: 100,
       size_class: 'scout',
       thesis: 't',
       confidence: 0.60,
@@ -294,11 +316,143 @@ describe('paperTradeOpen — scout tier', () => {
   });
 });
 
+describe('paperTradeOpen — v3 sizing ladder', () => {
+  it('rejects trades below the $100 minimum (post-wipe dust regression)', async () => {
+    const deps = makeDeps();
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'ATOM',
+      side: 'buy',
+      size_usd: 25,
+      thesis: 't',
+      confidence: 0.8,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/minimum trade size/i);
+  });
+
+  it('unproven setup (tier 1) rejects sizes above $100', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
+    const deps = makeDeps(); // empty breakdown → tier 1, base $100
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'BTC',
+      side: 'buy',
+      size_usd: 250,
+      thesis: 't',
+      confidence: 0.9,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/sizing ladder/i);
+  });
+
+  it('proven setup (tier 4) allows up to $1000 at conviction confidence', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
+    const deps = makeDeps({
+      getSetupBreakdown: async () => breakdownFixture({ D_discretionary: TIER4_PNLS }),
+    });
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'BTC',
+      side: 'buy',
+      size_usd: 1000,
+      thesis: 't',
+      confidence: 0.8,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(true);
+  });
+
+  it('scout-band confidence gets half the tier base', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '10000';
+    const deps = makeDeps({
+      getSetupBreakdown: async () => breakdownFixture({ D_discretionary: TIER4_PNLS }),
+    });
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'BTC',
+      side: 'buy',
+      size_usd: 600, // tier 4 base 1000, but 0.58 confidence → max 500
+      size_class: 'scout',
+      thesis: 't',
+      confidence: 0.58,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/sizing ladder/i);
+  });
+
+  it('persists setup_type/hedged/peak_price from validation on insert', async () => {
+    const captured: Record<string, unknown> = {};
+    const deps = makeDeps({
+      validateSetup: async () => ok({ setupType: 'S2_carry_harvest' as const, hedged: true }),
+      insertTrade: async (_db, payload) => {
+        Object.assign(captured, payload);
+        return { ...tradeFixture(), ...payload, id: 'inserted' };
+      },
+    });
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'SUI',
+      side: 'sell',
+      size_usd: 100,
+      setup_type: 'S2_carry_harvest',
+      thesis: 't',
+      confidence: 0.8,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(true);
+    expect(captured.setup_type).toBe('S2_carry_harvest');
+    expect(captured.hedged).toBe(true);
+    expect(captured.peak_price).toBeNull();
+  });
+
+  it('propagates setup validation rejection', async () => {
+    const deps = makeDeps({
+      validateSetup: async () => err('S1 rejected: funding is -13.2%, requires ≤ -30%'),
+    });
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'ATOM',
+      side: 'buy',
+      size_usd: 100,
+      setup_type: 'S1_funding_squeeze',
+      thesis: 't',
+      confidence: 0.8,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/S1 rejected/);
+  });
+});
+
+describe('computePnl — hedged carry positions', () => {
+  it('ignores the price leg and doubles fees', () => {
+    const t = tradeFixture({ hedged: true, size_usd: 1000, funding_accrued_usd: 10, entry_price: 100 });
+    // price moved 10% but hedged → directional 0; fees = 2 × $2 = $4; pnl = 10 − 4 = 6
+    expect(computePnl(t, 110)).toBeCloseTo(6, 6);
+  });
+
+  it('shows pure fee cost when nothing accrued yet', () => {
+    const t = tradeFixture({ hedged: true, size_usd: 1000, funding_accrued_usd: 0 });
+    expect(computePnl(t, 100)).toBeCloseTo(-4, 6);
+  });
+});
+
 describe('paperTradeOpen — exposure cap (post-entry 50% of cap)', () => {
   it('rejects when total open notional would exceed post-entry cap', async () => {
     process.env.MAX_OPEN_EXPOSURE_USD = '1000'; // post-entry cap = $500
     const deps = makeDeps({
       getOpenTrades: async () => [tradeFixture({ size_usd: 300 })],
+      getSetupBreakdown: async () => breakdownFixture({ D_discretionary: TIER4_PNLS }),
     });
     const result = await paperTradeOpen(FAKE_DB, 'r1', {
       instrument_kind: 'crypto',
@@ -318,6 +472,7 @@ describe('paperTradeOpen — exposure cap (post-entry 50% of cap)', () => {
     process.env.MAX_OPEN_EXPOSURE_USD = '1000'; // post-entry cap = $500
     const deps = makeDeps({
       getOpenTrades: async () => [tradeFixture({ size_usd: 200 })],
+      getSetupBreakdown: async () => breakdownFixture({ D_discretionary: TIER4_PNLS }),
     });
     const result = await paperTradeOpen(FAKE_DB, 'r1', {
       instrument_kind: 'crypto',
@@ -335,13 +490,15 @@ describe('paperTradeOpen — exposure cap (post-entry 50% of cap)', () => {
 
 describe('paperTradeOpen — confidence sizing (post-gate)', () => {
   it('rejects size above cap × conf² at conf 0.7', async () => {
-    process.env.MAX_OPEN_EXPOSURE_USD = '10000'; // post-entry = 5000, conf²=0.49 → 4900
-    const deps = makeDeps();
+    process.env.MAX_OPEN_EXPOSURE_USD = '2000'; // conf²=0.49 → $980; ladder tier 4 allows $1000
+    const deps = makeDeps({
+      getSetupBreakdown: async () => breakdownFixture({ D_discretionary: TIER4_PNLS }),
+    });
     const result = await paperTradeOpen(FAKE_DB, 'r1', {
       instrument_kind: 'crypto',
       instrument_id: 'BTC',
       side: 'buy',
-      size_usd: 4950, // < post-entry (5000) but > conf² (4900)
+      size_usd: 990, // ≤ ladder max (1000) but > conf² (980)
       thesis: 't',
       confidence: 0.7,
       exit_criteria: {},
@@ -351,14 +508,16 @@ describe('paperTradeOpen — confidence sizing (post-gate)', () => {
     expect(!result.ok && result.error).toMatch(/confidence cap/i);
   });
 
-  it('full cap available at conf 1.0 within post-entry cap', async () => {
-    process.env.MAX_OPEN_EXPOSURE_USD = '10000'; // post-entry cap = 5000
-    const deps = makeDeps();
+  it('full ladder base available at conf 1.0 within post-entry cap', async () => {
+    process.env.MAX_OPEN_EXPOSURE_USD = '2000'; // post-entry cap = 1000
+    const deps = makeDeps({
+      getSetupBreakdown: async () => breakdownFixture({ D_discretionary: TIER4_PNLS }),
+    });
     const result = await paperTradeOpen(FAKE_DB, 'r1', {
       instrument_kind: 'crypto',
       instrument_id: 'BTC',
       side: 'buy',
-      size_usd: 5_000,
+      size_usd: 1_000,
       thesis: 't',
       confidence: 1.0,
       exit_criteria: {},

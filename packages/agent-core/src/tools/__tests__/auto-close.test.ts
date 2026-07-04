@@ -5,6 +5,8 @@ import {
   autoCloseTriggeredTrades,
   computePnl,
   markOpenTradesToMarket,
+  nextPeakPrice,
+  trailingStopTriggered,
   type PaperTradeDeps,
 } from '../paper-trade.js';
 import { ok, err } from '@loob/shared';
@@ -41,6 +43,9 @@ function tradeFixture(overrides: Partial<Trade> = {}): Trade {
     size_class: 'conviction',
     funding_accrued_usd: 0,
     carry_accrued_at: null,
+    setup_type: 'D_discretionary',
+    hedged: false,
+    peak_price: null,
     ...overrides,
   };
 }
@@ -52,6 +57,12 @@ function makeDeps(overrides: Partial<PaperTradeDeps> = {}): PaperTradeDeps {
     getOpenTrades: async () => [],
     updateOpenTradePnl: async () => undefined,
     updateOpenTradeCarry: async () => undefined,
+    updateOpenTradePeak: async () => undefined,
+    updateOpenTradeExitCriteria: async () => undefined,
+    getSetupBreakdown: async () => {
+      throw new Error('not needed in auto-close tests');
+    },
+    validateSetup: async () => ok({ setupType: 'D_discretionary' as const, hedged: false }),
     getCryptoDerivatives: async () =>
       err('no derivatives in test fixture — accrual skips this trade'),
     getCryptoPrice: async (symbol) =>
@@ -233,6 +244,107 @@ describe('autoCloseTriggeredTrades — robustness', () => {
     const summary = await autoCloseTriggeredTrades(FAKE_DB, deps);
     expect(summary.closed).toHaveLength(0);
     expect(closes).toHaveLength(0);
+  });
+});
+
+describe('trailing stop math (pure)', () => {
+  it('nextPeakPrice ratchets up for longs, down for shorts', () => {
+    expect(nextPeakPrice('buy', null, 100, 105)).toBe(105);
+    expect(nextPeakPrice('buy', 110, 100, 105)).toBe(110);
+    expect(nextPeakPrice('sell', null, 100, 95)).toBe(95);
+    expect(nextPeakPrice('sell', 90, 100, 95)).toBe(90);
+  });
+
+  it('trailingStopTriggered fires on retrace from peak', () => {
+    expect(trailingStopTriggered('buy', 110, 107.7, 2)).toBe(true); // 110×0.98=107.8
+    expect(trailingStopTriggered('buy', 110, 107.9, 2)).toBe(false);
+    expect(trailingStopTriggered('sell', 90, 91.9, 2)).toBe(true); // 90×1.02=91.8
+    expect(trailingStopTriggered('sell', 90, 91.7, 2)).toBe(false);
+  });
+});
+
+describe('autoCloseTriggeredTrades — trailing stop', () => {
+  it('persists the new peak and closes on retrace', async () => {
+    const trade = tradeFixture({
+      side: 'buy',
+      entry_price: 100,
+      peak_price: 120,
+      exit_criteria: { trailing_stop_pct: 2 },
+    });
+    const peaks: number[] = [];
+    const deps = makeDeps({
+      getOpenTrades: async () => [trade],
+      // price retraced from a prior peak of 120 to 117 → 2.5% > 2% trail
+      getCryptoPrice: async () =>
+        ok({ symbol: 'BTC', priceUsd: 117, change24hPct: 0, marketCapUsd: 0, volumeUsd24h: 0 }),
+      updateOpenTradePeak: async (_db, _id, peak) => {
+        peaks.push(peak);
+      },
+    });
+    const summary = await autoCloseTriggeredTrades(FAKE_DB, deps);
+    expect(summary.closed).toHaveLength(1);
+    expect(summary.closed[0].reason).toBe('trailing_stop_hit');
+    expect(peaks).toHaveLength(0); // peak unchanged at 120 → no write
+  });
+
+  it('ratchets the peak upward without closing while trend runs', async () => {
+    const trade = tradeFixture({
+      side: 'buy',
+      entry_price: 100,
+      peak_price: 110,
+      exit_criteria: { trailing_stop_pct: 2 },
+    });
+    const peaks: number[] = [];
+    const deps = makeDeps({
+      getOpenTrades: async () => [trade],
+      getCryptoPrice: async () =>
+        ok({ symbol: 'BTC', priceUsd: 115, change24hPct: 0, marketCapUsd: 0, volumeUsd24h: 0 }),
+      updateOpenTradePeak: async (_db, _id, peak) => {
+        peaks.push(peak);
+      },
+    });
+    const summary = await autoCloseTriggeredTrades(FAKE_DB, deps);
+    expect(summary.closed).toHaveLength(0);
+    expect(peaks).toEqual([115]);
+  });
+
+  it('hard stop_loss wins when both would trigger', async () => {
+    const trade = tradeFixture({
+      side: 'buy',
+      entry_price: 100,
+      peak_price: 120,
+      exit_criteria: { stop_loss: 118, trailing_stop_pct: 2 },
+    });
+    const deps = makeDeps({
+      getOpenTrades: async () => [trade],
+      getCryptoPrice: async () =>
+        ok({ symbol: 'BTC', priceUsd: 117, change24hPct: 0, marketCapUsd: 0, volumeUsd24h: 0 }),
+    });
+    const summary = await autoCloseTriggeredTrades(FAKE_DB, deps);
+    expect(summary.closed).toHaveLength(1);
+    expect(summary.closed[0].reason).toBe('stop_loss_hit');
+  });
+
+  it('hedged trades skip price-based triggers but honour time_limit', async () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const noPriceTriggers = tradeFixture({
+      id: 'h1',
+      hedged: true,
+      exit_criteria: { stop_loss: 90, take_profit: 110, trailing_stop_pct: 2 },
+    });
+    const timeLimited = tradeFixture({ id: 'h2', hedged: true, exit_criteria: { time_limit: past } });
+    let priceFetches = 0;
+    const deps = makeDeps({
+      getOpenTrades: async () => [noPriceTriggers, timeLimited],
+      getCryptoPrice: async () => {
+        priceFetches++;
+        return ok({ symbol: 'BTC', priceUsd: 50, change24hPct: 0, marketCapUsd: 0, volumeUsd24h: 0 });
+      },
+    });
+    const summary = await autoCloseTriggeredTrades(FAKE_DB, deps);
+    expect(summary.closed).toHaveLength(1);
+    expect(summary.closed[0].trade_id).toBe('h2');
+    expect(priceFetches).toBe(0);
   });
 });
 
@@ -431,6 +543,128 @@ describe('accrueFundingCarry', () => {
     expect(summary.accrued).toBe(0);
     expect(summary.skipped).toBe(2);
     expect(summary.errors).toHaveLength(0);
+  });
+
+  it('S1 breakeven ratchet: funding flip tightens stop to entry, exactly once', async () => {
+    const openedAt = new Date('2026-06-10T00:00:00Z');
+    const nowMs = openedAt.getTime() + 3_600_000;
+    const s1 = tradeFixture({
+      setup_type: 'S1_funding_squeeze',
+      side: 'buy',
+      entry_price: 100,
+      exit_criteria: { stop_loss: 90, trailing_stop_pct: 2 },
+      opened_at: openedAt.toISOString(),
+    });
+    const writes: Array<Record<string, unknown>> = [];
+    const deps = makeDeps({
+      getOpenTrades: async () => [s1],
+      getCryptoDerivatives: async () => derivFixture(12), // flipped positive
+      updateOpenTradeExitCriteria: async (_db, _id, exit) => {
+        writes.push(exit);
+      },
+      now: () => nowMs,
+    });
+    const summary = await accrueFundingCarry(FAKE_DB, deps);
+    expect(summary.ratcheted).toHaveLength(1);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].stop_loss).toBe(100);
+    expect(writes[0].trailing_stop_pct).toBe(2); // preserved
+    expect(String(writes[0].conditions)).toMatch(/breakeven on funding flip/);
+
+    // Second sweep with the stop already at entry: ratchet must not re-fire.
+    const already = tradeFixture({
+      setup_type: 'S1_funding_squeeze',
+      side: 'buy',
+      entry_price: 100,
+      exit_criteria: { stop_loss: 100 },
+      opened_at: openedAt.toISOString(),
+    });
+    const deps2 = makeDeps({
+      getOpenTrades: async () => [already],
+      getCryptoDerivatives: async () => derivFixture(12),
+      updateOpenTradeExitCriteria: async () => {
+        throw new Error('must not re-ratchet');
+      },
+      now: () => nowMs,
+    });
+    const summary2 = await accrueFundingCarry(FAKE_DB, deps2);
+    expect(summary2.ratcheted).toHaveLength(0);
+    expect(summary2.errors).toHaveLength(0);
+  });
+
+  it('S1 ratchet does NOT fire while funding is still negative', async () => {
+    const openedAt = new Date('2026-06-10T00:00:00Z');
+    const s1 = tradeFixture({
+      setup_type: 'S1_funding_squeeze',
+      side: 'buy',
+      entry_price: 100,
+      exit_criteria: { stop_loss: 90 },
+      opened_at: openedAt.toISOString(),
+    });
+    const deps = makeDeps({
+      getOpenTrades: async () => [s1],
+      getCryptoDerivatives: async () => derivFixture(-45),
+      updateOpenTradeExitCriteria: async () => {
+        throw new Error('must not ratchet on negative funding');
+      },
+      now: () => openedAt.getTime() + 3_600_000,
+    });
+    const summary = await accrueFundingCarry(FAKE_DB, deps);
+    expect(summary.ratcheted).toHaveLength(0);
+    expect(summary.errors).toHaveLength(0);
+  });
+
+  it('S2 carry decay: hedged trade auto-closes when funding drops below +5% ann', async () => {
+    const openedAt = new Date('2026-06-10T00:00:00Z');
+    const nowMs = openedAt.getTime() + 10 * 3_600_000;
+    const s2 = tradeFixture({
+      setup_type: 'S2_carry_harvest',
+      hedged: true,
+      side: 'sell',
+      size_usd: 1000,
+      entry_price: 100,
+      funding_accrued_usd: 20,
+      carry_accrued_at: openedAt.toISOString(),
+      opened_at: openedAt.toISOString(),
+    });
+    const closes: Array<{ id: string; pnl: number }> = [];
+    const deps = makeDeps({
+      getOpenTrades: async () => [s2],
+      getCryptoDerivatives: async () => derivFixture(3), // decayed below +5%
+      closeTrade: async (_db, id, _exitPrice, pnl) => {
+        closes.push({ id, pnl });
+      },
+      now: () => nowMs,
+    });
+    const summary = await accrueFundingCarry(FAKE_DB, deps);
+    expect(summary.closed).toHaveLength(1);
+    expect(summary.closed[0].reason).toBe('carry_decayed');
+    expect(closes).toHaveLength(1);
+    // short at +3% ann for 10h earns ~+$0.0342 on top of $20; hedged pnl = carry − $4 doubled fees
+    expect(closes[0].pnl).toBeCloseTo(20 + (1000 * 0.03 * 10) / 8760 - 4, 2);
+  });
+
+  it('S2 stays open while the carry is still rich', async () => {
+    const openedAt = new Date('2026-06-10T00:00:00Z');
+    const s2 = tradeFixture({
+      setup_type: 'S2_carry_harvest',
+      hedged: true,
+      side: 'sell',
+      size_usd: 1000,
+      opened_at: openedAt.toISOString(),
+    });
+    const deps = makeDeps({
+      getOpenTrades: async () => [s2],
+      getCryptoDerivatives: async () => derivFixture(40),
+      closeTrade: async () => {
+        throw new Error('must not close while carry is rich');
+      },
+      now: () => openedAt.getTime() + 3_600_000,
+    });
+    const summary = await accrueFundingCarry(FAKE_DB, deps);
+    expect(summary.closed).toHaveLength(0);
+    expect(summary.errors).toHaveLength(0);
+    expect(summary.accrued).toBe(1);
   });
 });
 

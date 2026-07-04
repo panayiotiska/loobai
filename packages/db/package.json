@@ -16,9 +16,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "migrate": "tsx src/migrate.ts",
-    "migrate:local": "dotenv -e ../../.env -- tsx src/migrate.ts"
+    "migrate:local": "dotenv -e ../../.env -- tsx src/migrate.ts",
+    "seed:formula": "tsx src/seed-formula.ts",
+    "seed:formula:local": "dotenv -e ../../.env -- tsx src/seed-formula.ts"
   },
   "dependencies": {
+    "@loob/shared": "workspace:*",
     "@supabase/supabase-js": "^2.44.4"
   },
   "devDependencies": {

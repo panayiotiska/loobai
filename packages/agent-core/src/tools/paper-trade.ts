@@ -6,12 +6,17 @@ import {
   getOpenTrades,
   updateOpenTradePnl,
   updateOpenTradeCarry,
+  updateOpenTradePeak,
+  updateOpenTradeExitCriteria,
+  getSetupBreakdown,
 } from '@loob/db';
 import type { Result } from '@loob/shared';
 import { ok, err } from '@loob/shared';
 import { getCryptoPrice } from './market-data.js';
 import { getPolymarketOrderbook } from './market-data.js';
 import { getCryptoDerivatives } from './derivatives.js';
+import { validateSetup } from './setup-validation.js';
+import { sizingTierForSetup, maxAllowedSize, MIN_TRADE_USD } from '../sizing.js';
 
 const DEFAULT_MAX_OPEN_EXPOSURE_USD = 10_000;
 const DEFAULT_SLIPPAGE_BPS = 5;
@@ -69,6 +74,12 @@ export function roundTripFeeUsd(sizeUsd: number): number {
 }
 
 export function computePnl(trade: Trade, exitPrice: number): number {
+  // 0006: hedged carry positions are delta-neutral — the modeled spot leg
+  // cancels the perp price leg. PnL is the funding stream minus doubled fees
+  // (two legs to open, two to close).
+  if (trade.hedged) {
+    return (trade.funding_accrued_usd ?? 0) - 2 * roundTripFeeUsd(trade.size_usd);
+  }
   if (!(trade.entry_price > 0)) return 0;
   const priceChangePct = (exitPrice - trade.entry_price) / trade.entry_price;
   const directional = trade.side === 'buy' || trade.side === 'yes'
@@ -78,6 +89,32 @@ export function computePnl(trade: Trade, exitPrice: number): number {
   // this the squeeze-scout thesis — "crowded shorts pay longs" — was invisible
   // to the scoreboard: P&L measured price return only.
   return directional + (trade.funding_accrued_usd ?? 0) - roundTripFeeUsd(trade.size_usd);
+}
+
+// --- 0006: trailing-stop math (pure, unit-tested) ---
+
+export function nextPeakPrice(
+  side: Trade['side'],
+  prevPeak: number | null,
+  entryPrice: number,
+  price: number,
+): number {
+  const isLong = side === 'buy' || side === 'yes';
+  const base = prevPeak ?? entryPrice;
+  return isLong ? Math.max(base, price) : Math.min(base, price);
+}
+
+export function trailingStopTriggered(
+  side: Trade['side'],
+  peak: number,
+  price: number,
+  trailingPct: number,
+): boolean {
+  if (!(trailingPct > 0) || !(peak > 0)) return false;
+  const isLong = side === 'buy' || side === 'yes';
+  return isLong
+    ? price <= peak * (1 - trailingPct / 100)
+    : price >= peak * (1 + trailingPct / 100);
 }
 
 /**
@@ -99,9 +136,13 @@ export interface PaperTradeDeps {
   getOpenTrades: typeof getOpenTrades;
   updateOpenTradePnl: typeof updateOpenTradePnl;
   updateOpenTradeCarry: typeof updateOpenTradeCarry;
+  updateOpenTradePeak: typeof updateOpenTradePeak;
+  updateOpenTradeExitCriteria: typeof updateOpenTradeExitCriteria;
+  getSetupBreakdown: typeof getSetupBreakdown;
   getCryptoPrice: typeof getCryptoPrice;
   getCryptoDerivatives: typeof getCryptoDerivatives;
   getPolymarketOrderbook: typeof getPolymarketOrderbook;
+  validateSetup: typeof validateSetup;
   now: () => number;
 }
 
@@ -111,9 +152,13 @@ const defaultDeps: PaperTradeDeps = {
   getOpenTrades,
   updateOpenTradePnl,
   updateOpenTradeCarry,
+  updateOpenTradePeak,
+  updateOpenTradeExitCriteria,
+  getSetupBreakdown,
   getCryptoPrice,
   getCryptoDerivatives,
   getPolymarketOrderbook,
+  validateSetup,
   now: () => Date.now(),
 };
 
@@ -126,12 +171,18 @@ export interface PaperTradeOpenInput {
   side: Trade['side'];
   size_usd: number;
   size_class?: TradeSizeClass;
+  // v3: required setup classification — the setup's defining condition is
+  // verified server-side (see setup-validation.ts).
+  setup_type?: string;
   thesis: string;
   confidence?: number | null;
   exit_criteria: {
     take_profit?: number;
     stop_loss?: number;
     time_limit?: string;
+    // v3: retrace from the favorable price extreme (peak_price) that closes
+    // the trade. Preferred over tight fixed TPs — lets winners run.
+    trailing_stop_pct?: number;
     conditions?: string;
   };
   // v2: adversarial rationale (REQUIRED for paper_trade_open)
@@ -153,6 +204,12 @@ export async function paperTradeOpen(
   try {
     if (!(input.size_usd > 0)) {
       return err(`size_usd must be positive (got ${input.size_usd})`);
+    }
+    if (input.size_usd < MIN_TRADE_USD) {
+      return err(
+        `Minimum trade size is $${MIN_TRADE_USD} (got $${input.size_usd}) — sub-$${MIN_TRADE_USD} positions are noise after 20bps fees + 10bps slippage ` +
+          `(this regression appeared after the June 30 formula wipe). Resize to ≥ $${MIN_TRADE_USD} or skip.`,
+      );
     }
 
     const rawConfidence = input.confidence;
@@ -191,6 +248,32 @@ export async function paperTradeOpen(
         `Adversarial rationale incomplete for ${sizeClass}. Missing or too short: ${missingFields.join(', ')}. ` +
           `Articulate retail / institutional / adversarial views (≥20 chars each), a concrete invalidation signal, ` +
           `and at least ${minSignals} independent confirming signals before opening.`,
+      );
+    }
+
+    // v3: verify the setup's defining condition against live market data.
+    // The June churn (squeeze scouts at −13% funding when the rule said −30%)
+    // happened because the rule lived only in the prompt.
+    const setupCheck = await deps.validateSetup({
+      setup_type: input.setup_type,
+      instrument_kind: input.instrument_kind,
+      instrument_id: input.instrument_id,
+      side: input.side,
+      size_class: sizeClass,
+    });
+    if (!setupCheck.ok) return setupCheck;
+    const { setupType, hedged } = setupCheck.data;
+
+    // v3: deterministic sizing ladder — each setup earns size from its own
+    // realized results. The agent proposes, code clamps.
+    const breakdown = await deps.getSetupBreakdown(db);
+    const tier = sizingTierForSetup(breakdown[setupType]);
+    const ladderMax = maxAllowedSize(tier.baseUsd, confidence);
+    if (input.size_usd > ladderMax) {
+      return err(
+        `Sizing ladder (code-decided): ${setupType} is at ${tier.reason}. ` +
+          `Requested $${input.size_usd} > allowed $${ladderMax.toFixed(0)} at confidence ${confidence.toFixed(2)}. ` +
+          `Sizes scale automatically as the setup proves itself in realized results — resize to ≤ $${ladderMax.toFixed(0)}.`,
       );
     }
 
@@ -288,6 +371,9 @@ export async function paperTradeOpen(
       size_class: sizeClass,
       funding_accrued_usd: 0,
       carry_accrued_at: null,
+      setup_type: setupType,
+      hedged,
+      peak_price: null,
     });
 
     return ok(trade);
@@ -376,6 +462,7 @@ export async function autoCloseTriggeredTrades(
         take_profit?: number;
         stop_loss?: number;
         time_limit?: string;
+        trailing_stop_pct?: number;
       };
 
       if (exit?.time_limit) {
@@ -386,10 +473,20 @@ export async function autoCloseTriggeredTrades(
         }
       }
 
+      // 0006: hedged carry positions have no price leg — price-based triggers
+      // don't apply (the carry-decay auto-close lives in accrueFundingCarry).
+      if (trade.hedged) continue;
+
       const price = await fetchRawMarkPrice(deps, trade);
       if (price == null) continue;
 
       const isLong = trade.side === 'buy' || trade.side === 'yes';
+
+      // 0006: track the favorable extreme since entry for trailing stops.
+      const peak = nextPeakPrice(trade.side, trade.peak_price, trade.entry_price, price);
+      if (trade.peak_price == null || peak !== trade.peak_price) {
+        await deps.updateOpenTradePeak(db, trade.id, peak);
+      }
 
       if (exit?.take_profit != null) {
         const hit = isLong ? price >= exit.take_profit : price <= exit.take_profit;
@@ -404,6 +501,10 @@ export async function autoCloseTriggeredTrades(
           await closeAt(db, trade, 'stop_loss_hit', summary, deps, price);
           continue;
         }
+      }
+      if (exit?.trailing_stop_pct != null && trailingStopTriggered(trade.side, peak, price, exit.trailing_stop_pct)) {
+        await closeAt(db, trade, 'trailing_stop_hit', summary, deps, price);
+        continue;
       }
     } catch (e) {
       summary.errors.push({ trade_id: trade.id, error: e instanceof Error ? e.message : String(e) });
@@ -421,10 +522,13 @@ async function closeAt(
   deps: PaperTradeDeps,
   rawPriceOverride?: number,
 ): Promise<void> {
+  // Hedged trades have no price leg — computePnl ignores exit price, so skip the fetch.
   const rawExit =
     rawPriceOverride != null
       ? rawPriceOverride
-      : ((await fetchRawMarkPrice(deps, trade)) ?? trade.entry_price);
+      : trade.hedged
+        ? trade.entry_price
+        : ((await fetchRawMarkPrice(deps, trade)) ?? trade.entry_price);
   const exitPrice = applyExitSlippage(rawExit, trade.side);
   const pnl = computePnl(trade, exitPrice);
   await deps.closeTrade(db, trade.id, exitPrice, pnl);
@@ -434,10 +538,18 @@ async function closeAt(
 export interface CarryAccrualSummary {
   accrued: number;
   skipped: number;
+  // 0006: S1 stops tightened to breakeven because funding flipped positive.
+  ratcheted: Array<{ trade_id: string; stop_loss: number }>;
+  // 0006: hedged S2 positions closed because the carry decayed.
+  closed: Array<{ trade_id: string; reason: string; pnl_usd: number }>;
   errors: Array<{ trade_id: string; error: string }>;
 }
 
 const HOURS_PER_YEAR = 24 * 365;
+
+// 0006: a hedged carry harvest earns nothing once funding normalizes — close
+// when the annualized rate decays below this threshold (fees already paid).
+export const S2_CARRY_DECAY_ANN_PCT = 5;
 
 /**
  * 0005: Accrue estimated perp funding carry on open crypto trades.
@@ -454,7 +566,7 @@ export async function accrueFundingCarry(
   db: DB,
   deps: PaperTradeDeps = defaultDeps,
 ): Promise<CarryAccrualSummary> {
-  const summary: CarryAccrualSummary = { accrued: 0, skipped: 0, errors: [] };
+  const summary: CarryAccrualSummary = { accrued: 0, skipped: 0, ratcheted: [], closed: [], errors: [] };
   const open = await deps.getOpenTrades(db);
   const nowMs = deps.now();
 
@@ -475,13 +587,42 @@ export async function accrueFundingCarry(
         summary.skipped++;
         continue;
       }
-      const annualizedFrac = deriv.data.fundingRateAnnualizedPct / 100;
+      const fundingAnnPct = deriv.data.fundingRateAnnualizedPct;
+      const annualizedFrac = fundingAnnPct / 100;
       // Long pays positive funding / receives negative; short is the inverse.
       const directionSign = trade.side === 'buy' ? -1 : 1;
       const carryUsd = trade.size_usd * directionSign * annualizedFrac * (hours / HOURS_PER_YEAR);
       const total = (trade.funding_accrued_usd ?? 0) + carryUsd;
       await deps.updateOpenTradeCarry(db, trade.id, total, new Date(nowMs).toISOString());
       summary.accrued++;
+
+      // 0006: S1 breakeven ratchet. A funding flip invalidates the squeeze
+      // thesis's carry component, but "immediate close" (old H66) cut winners
+      // at +$2 that ran to +$40. Instead: tighten the stop to breakeven and
+      // let the price leg keep running with risk removed. One-way ratchet.
+      if (trade.setup_type === 'S1_funding_squeeze' && trade.side === 'buy' && fundingAnnPct >= 0) {
+        const exit = (trade.exit_criteria ?? {}) as Record<string, unknown> & { stop_loss?: number };
+        if (exit.stop_loss == null || exit.stop_loss < trade.entry_price) {
+          const nextExit = {
+            ...exit,
+            stop_loss: trade.entry_price,
+            conditions: [exit.conditions, `auto: stop→breakeven on funding flip ${new Date(nowMs).toISOString()}`]
+              .filter(Boolean)
+              .join(' | '),
+          };
+          await deps.updateOpenTradeExitCriteria(db, trade.id, nextExit);
+          summary.ratcheted.push({ trade_id: trade.id, stop_loss: trade.entry_price });
+        }
+      }
+
+      // 0006: hedged carry harvest earns nothing once funding normalizes —
+      // close it (PnL = accrued funding − doubled fees; no price leg).
+      if (trade.hedged && fundingAnnPct < S2_CARRY_DECAY_ANN_PCT) {
+        const updated: Trade = { ...trade, funding_accrued_usd: total };
+        const pnl = computePnl(updated, trade.entry_price);
+        await deps.closeTrade(db, trade.id, trade.entry_price, pnl);
+        summary.closed.push({ trade_id: trade.id, reason: 'carry_decayed', pnl_usd: pnl });
+      }
     } catch (e) {
       summary.errors.push({ trade_id: trade.id, error: e instanceof Error ? e.message : String(e) });
     }
@@ -510,6 +651,18 @@ export async function markOpenTradesToMarket(
 
   for (const trade of open) {
     try {
+      // 0006: hedged carry positions have no price leg — PnL depends only on
+      // accrued funding, so skip the price fetch entirely.
+      if (trade.hedged) {
+        const pnl = computePnl(trade, trade.entry_price);
+        if (trade.pnl_usd != null && Math.abs(pnl - trade.pnl_usd) < 0.01) {
+          summary.skipped++;
+          continue;
+        }
+        await deps.updateOpenTradePnl(db, trade.id, pnl);
+        summary.updated++;
+        continue;
+      }
       const raw = await fetchRawMarkPrice(deps, trade);
       if (raw == null) {
         summary.skipped++;

@@ -1,4 +1,5 @@
 import type { RunKind, RunOutput } from '@loob/shared';
+import { validateFormulaUpdate } from '@loob/shared';
 import {
   createServiceClient,
   createRun,
@@ -71,8 +72,16 @@ export async function runTick(kind: RunKind): Promise<void> {
     // this the scoreboard never measured the mechanism the strategy trades on.
     try {
       const carry = await accrueFundingCarry(db);
-      if (carry.accrued || carry.errors.length) {
-        log.info({ msg: 'funding carry accrued', runId: run.id, accrued: carry.accrued, skipped: carry.skipped, errors: carry.errors.length });
+      if (carry.accrued || carry.errors.length || carry.ratcheted.length || carry.closed.length) {
+        log.info({
+          msg: 'funding carry accrued',
+          runId: run.id,
+          accrued: carry.accrued,
+          skipped: carry.skipped,
+          ratcheted: carry.ratcheted,
+          carryClosed: carry.closed,
+          errors: carry.errors.length,
+        });
       }
     } catch (e) {
       log.warn({ msg: 'funding carry sweep skipped', runId: run.id, err: String(e) });
@@ -187,7 +196,7 @@ export async function runTick(kind: RunKind): Promise<void> {
             `Do NOT call tools in this turn. Skip the startup ritual — it already ran earlier in this run. If a tool call fails here, that is expected and is NOT an infrastructure problem: never record a "tooling failure" lesson or halt the strategy because of it.`,
             `## Current FORMULA.md (v${currentFormula?.version ?? 0})\n${currentFormula?.content ?? '(none yet)'}`,
             `## Directive\n${directive}`,
-            `Preserve ALL existing sections, hypotheses, and lessons — append and amend, never truncate. The updated document must not lose content unless a section is provably obsolete.`,
+            `Preserve ALL existing sections, hypotheses, and lessons — append and amend, never truncate. The document MUST keep its "## Setups", "## Hypotheses", "## Anti-pattern log", and "## Recent lessons" sections; a validation guard rejects versions that are short, missing sections, or >40% smaller than the previous version.`,
             `## Output contract\nEnd your response with ONE fenced \`\`\`json block: {"summary": "...", "newFormula": "<full updated FORMULA.md markdown>", "formulaChangelog": "...", "paperTradesOpened": [], "paperTradesClosed": [], "agentRequestsCreated": [], "confidenceInThesis": 0.5, "nextRunFocus": "..."}. Valid JSON only — straight quotes, \\n escapes for newlines, no trailing commas, nothing after the block.`,
           ].join('\n\n');
           const followup = await runGeminiLoop({
@@ -212,17 +221,63 @@ export async function runTick(kind: RunKind): Promise<void> {
       }
     }
 
-    // Persist new formula version if agent updated it
+    // Persist new formula version if agent updated it — but only through the
+    // guard. On 2026-06-30 an unvalidated `newFormula: "..."` was persisted as
+    // v117 and destroyed the accumulated strategy document. Never again: an
+    // invalid update gets ONE corrective follow-up; if that also fails, the
+    // previous version stays live (stale beats wiped) and the rejection reason
+    // is surfaced in the run summary for the next run to see.
     if (finalJson.newFormula) {
-      const newVersion = (currentFormula?.version ?? 0) + 1;
-      await insertFormulaVersion(db, {
-        run_id: run.id,
-        version: newVersion,
-        content: finalJson.newFormula,
-        changelog: finalJson.formulaChangelog ?? `v${newVersion}: updated by ${kind} run`,
-        parent_version: currentFormula?.version ?? null,
-      });
-      log.info({ msg: 'formula version inserted', version: newVersion, runId: run.id });
+      let candidate = finalJson.newFormula;
+      let changelog = finalJson.formulaChangelog;
+      let verdict = validateFormulaUpdate(candidate, currentFormula);
+
+      if (!verdict.ok) {
+        log.warn({ msg: 'formula update rejected — attempting corrective follow-up', runId: run.id, reason: verdict.reason });
+        try {
+          const correctivePrompt = [
+            `You are Loob, an autonomous trading research agent. Your FORMULA.md update was REJECTED by a validation guard:`,
+            `> ${verdict.reason}`,
+            `## Current FORMULA.md (v${currentFormula?.version ?? 0}) — the live version you must preserve\n${currentFormula?.content ?? '(none yet)'}`,
+            `## Your rejected update\n${candidate.slice(0, 8_000)}`,
+            `## Directive\nRe-emit a corrected FULL FORMULA.md document: start from the current version above, preserve every section (## Setups, ## Hypotheses, ## Anti-pattern log, ## Recent lessons), and fold in your intended changes incrementally. Do NOT call tools.`,
+            `## Output contract\nEnd your response with ONE fenced \`\`\`json block: {"summary": "...", "newFormula": "<full corrected FORMULA.md markdown>", "formulaChangelog": "...", "paperTradesOpened": [], "paperTradesClosed": [], "agentRequestsCreated": [], "confidenceInThesis": 0.5, "nextRunFocus": "..."}. Valid JSON only.`,
+          ].join('\n\n');
+          const corrective = await runGeminiLoop({
+            systemPrompt: correctivePrompt,
+            toolDeclarations: [],
+            toolHandlers,
+            maxIterations: 2,
+            runId: run.id,
+            db,
+          });
+          if (corrective.finalJson.newFormula) {
+            candidate = corrective.finalJson.newFormula;
+            changelog = corrective.finalJson.formulaChangelog ?? changelog;
+            verdict = validateFormulaUpdate(candidate, currentFormula);
+          }
+        } catch (e) {
+          log.warn({ msg: 'corrective formula follow-up failed', runId: run.id, err: String(e) });
+        }
+      }
+
+      if (verdict.ok) {
+        const newVersion = (currentFormula?.version ?? 0) + 1;
+        await insertFormulaVersion(db, {
+          run_id: run.id,
+          version: newVersion,
+          content: candidate,
+          changelog: changelog ?? `v${newVersion}: updated by ${kind} run`,
+          parent_version: currentFormula?.version ?? null,
+        });
+        log.info({ msg: 'formula version inserted', version: newVersion, runId: run.id });
+      } else {
+        log.warn({ msg: 'formula update dropped — keeping previous version', runId: run.id, reason: verdict.reason });
+        finalJson = {
+          ...finalJson,
+          summary: `${finalJson.summary} [formula update rejected: ${verdict.reason}]`,
+        };
+      }
     }
 
     // Mark notes as consumed

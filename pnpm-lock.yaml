@@ -131,6 +131,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@loob/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@supabase/supabase-js':
         specifier: ^2.44.4
         version: 2.105.4

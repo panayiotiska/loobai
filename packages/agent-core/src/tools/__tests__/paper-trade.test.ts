@@ -434,6 +434,95 @@ describe('paperTradeOpen — v3 sizing ladder', () => {
   });
 });
 
+describe('paperTradeOpen — v3.1 duplicate + D-slot guards', () => {
+  it('rejects a second same-direction position on the same instrument, whatever the setup', async () => {
+    const deps = makeDeps({
+      getOpenTrades: async () => [
+        tradeFixture({ instrument_id: 'ATOM', side: 'buy', setup_type: 'S1_funding_squeeze' }),
+      ],
+    });
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'atom', // case-insensitive
+      side: 'buy',
+      size_usd: 100,
+      setup_type: 'D_discretionary',
+      size_class: 'scout',
+      thesis: 't',
+      confidence: 0.58,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/duplicate position/i);
+    expect(!r.ok && r.error).toMatch(/AP-4/);
+  });
+
+  it('allows the opposite direction on the same instrument', async () => {
+    const deps = makeDeps({
+      getOpenTrades: async () => [
+        tradeFixture({ instrument_id: 'ATOM', side: 'buy', setup_type: 'S1_funding_squeeze' }),
+      ],
+    });
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'ATOM',
+      side: 'sell',
+      size_usd: 100,
+      size_class: 'scout',
+      thesis: 't',
+      confidence: 0.58,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(true);
+  });
+
+  it('rejects a second concurrent D_discretionary experiment', async () => {
+    const deps = makeDeps({
+      getOpenTrades: async () => [
+        tradeFixture({ instrument_id: 'VELVET', side: 'buy', setup_type: 'D_discretionary' }),
+      ],
+    });
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'polymarket',
+      instrument_id: 'some-market',
+      side: 'yes',
+      size_usd: 100,
+      setup_type: 'D_discretionary',
+      size_class: 'scout',
+      thesis: 't',
+      confidence: 0.58,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/D_discretionary slot occupied/i);
+  });
+
+  it('an open D does not block S1/S2/S3 entries', async () => {
+    const deps = makeDeps({
+      getOpenTrades: async () => [
+        tradeFixture({ instrument_id: 'VELVET', side: 'buy', setup_type: 'D_discretionary' }),
+      ],
+      validateSetup: async () => ok({ setupType: 'S1_funding_squeeze' as const, hedged: false }),
+    });
+    const r = await paperTradeOpen(FAKE_DB, 'r1', {
+      instrument_kind: 'crypto',
+      instrument_id: 'SEI',
+      side: 'buy',
+      size_usd: 100,
+      setup_type: 'S1_funding_squeeze',
+      size_class: 'scout',
+      thesis: 't',
+      confidence: 0.6,
+      exit_criteria: {},
+      ...validRationale(),
+    }, deps);
+    expect(r.ok).toBe(true);
+  });
+});
+
 describe('computePnl — hedged carry positions', () => {
   it('ignores the price leg and doubles fees', () => {
     const t = tradeFixture({ hedged: true, size_usd: 1000, funding_accrued_usd: 10, entry_price: 100 });
@@ -451,7 +540,9 @@ describe('paperTradeOpen — exposure cap (post-entry 50% of cap)', () => {
   it('rejects when total open notional would exceed post-entry cap', async () => {
     process.env.MAX_OPEN_EXPOSURE_USD = '1000'; // post-entry cap = $500
     const deps = makeDeps({
-      getOpenTrades: async () => [tradeFixture({ size_usd: 300 })],
+      getOpenTrades: async () => [
+        tradeFixture({ size_usd: 300, instrument_id: 'ETH', setup_type: 'S1_funding_squeeze' }),
+      ],
       getSetupBreakdown: async () => breakdownFixture({ D_discretionary: TIER4_PNLS }),
     });
     const result = await paperTradeOpen(FAKE_DB, 'r1', {
@@ -471,7 +562,9 @@ describe('paperTradeOpen — exposure cap (post-entry 50% of cap)', () => {
   it('allows when at the post-entry boundary', async () => {
     process.env.MAX_OPEN_EXPOSURE_USD = '1000'; // post-entry cap = $500
     const deps = makeDeps({
-      getOpenTrades: async () => [tradeFixture({ size_usd: 200 })],
+      getOpenTrades: async () => [
+        tradeFixture({ size_usd: 200, instrument_id: 'ETH', setup_type: 'S1_funding_squeeze' }),
+      ],
       getSetupBreakdown: async () => breakdownFixture({ D_discretionary: TIER4_PNLS }),
     });
     const result = await paperTradeOpen(FAKE_DB, 'r1', {

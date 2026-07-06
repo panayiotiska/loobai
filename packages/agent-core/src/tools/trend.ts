@@ -121,7 +121,17 @@ export function computeTrendSignal(symbol: string, candles: OHLCCandle[]): Resul
 
 export async function getTrendSignal(symbol: string): Promise<Result<TrendSignal>> {
   const ohlc = await getCryptoOHLC(symbol, '1d', 72);
-  if (!ohlc.ok) return err(`could not fetch daily OHLC for ${symbol}: ${ohlc.error}`);
+  if (!ohlc.ok) {
+    // Binance answers 400 for unknown symbols — common for low-caps surfaced
+    // by scan_low_cap_movers. Tell the model plainly so it moves on.
+    if (/400/.test(ohlc.error)) {
+      return err(
+        `${symbol.toUpperCase()} has no Binance USDT market — S3/get_trend_signal is unavailable for this instrument. ` +
+          `Do not retry; low-caps from scan_low_cap_movers are often unlisted. If you still want exposure it can only be D_discretionary.`,
+      );
+    }
+    return err(`could not fetch daily OHLC for ${symbol}: ${ohlc.error}`);
+  }
   // Binance returns the current, still-forming daily candle last. Evaluating
   // it live makes the volume ratio meaningless (partial volume) — daily
   // breakout signals are judged on the last CLOSED candle.

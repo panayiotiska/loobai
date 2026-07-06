@@ -38,6 +38,26 @@ export async function updateRun(
   if (error) throw new Error(`updateRun: ${error.message}`);
 }
 
+// v3.1: GH Actions can cancel/kill a tick mid-flight (concurrency group,
+// timeout, upstream outage stretching retries) — the run row then stays
+// 'running' forever and pollutes run history. Sweep such zombies to 'failed'
+// at the start of each tick.
+export async function failStaleRuns(db: DB, olderThanMinutes = 30): Promise<number> {
+  const cutoff = new Date(Date.now() - olderThanMinutes * 60_000).toISOString();
+  const { data, error } = await db
+    .from('runs')
+    .update({
+      status: 'failed',
+      finished_at: new Date().toISOString(),
+      error: `stale: still 'running' after ${olderThanMinutes}m — process was killed (workflow cancelled or timed out)`,
+    })
+    .eq('status', 'running')
+    .lt('started_at', cutoff)
+    .select('id');
+  if (error) throw new Error(`failStaleRuns: ${error.message}`);
+  return (data ?? []).length;
+}
+
 export async function getRecentRuns(db: DB, limit = 10): Promise<Run[]> {
   const { data, error } = await db
     .from('runs')

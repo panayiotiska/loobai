@@ -297,6 +297,38 @@ export async function paperTradeOpen(
     }
 
     const openTrades = await deps.getOpenTrades(db);
+
+    // v3.1: one bet per instrument+direction. On 2026-07-05 the agent held an
+    // S1 ATOM long and opened a SECOND ATOM long reclassified as D once funding
+    // normalized below the S1 threshold — the same correlated bet twice,
+    // dodging the setup gate (AP-4).
+    const duplicate = openTrades.find(
+      (t) => t.instrument_id.toUpperCase() === input.instrument_id.toUpperCase() && t.side === input.side,
+    );
+    if (duplicate) {
+      return err(
+        `Duplicate position: you already hold an open ${duplicate.side.toUpperCase()} on ${duplicate.instrument_id} ` +
+          `($${duplicate.size_usd}, ${duplicate.setup_type}, trade ${duplicate.id.slice(0, 8)}). ` +
+          `A second same-direction position on the same instrument is the SAME bet twice, not a new experiment (AP-4) — ` +
+          `and reclassifying it under a different setup_type does not change that. Manage the existing position instead.`,
+      );
+    }
+
+    // v3.1: one discretionary experiment at a time. D is a learning slot, not
+    // a trading strategy — without this cap the open-or-skip nudge manufactured
+    // D scouts every time the market offered no real setup.
+    if (setupType === 'D_discretionary') {
+      const openD = openTrades.filter((t) => t.setup_type === 'D_discretionary');
+      if (openD.length >= 1) {
+        const d = openD[0];
+        return err(
+          `D_discretionary slot occupied: ${d.instrument_id} ${d.side} ($${d.size_usd}, trade ${d.id.slice(0, 8)}) is still open. ` +
+            `One discretionary experiment at a time — if nothing fits S1/S2/S3 and the D slot is taken, the correct position size is zero. ` +
+            `Set nextRunFocus to the observable that would create a real setup.`,
+        );
+      }
+    }
+
     const currentExposure = openTrades.reduce((s, t) => s + t.size_usd, 0);
     const postEntryCap = cap * POST_ENTRY_EXPOSURE_FRACTION;
     if (currentExposure + input.size_usd > postEntryCap) {

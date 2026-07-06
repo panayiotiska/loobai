@@ -104,7 +104,9 @@ Every trade MUST carry a \`setup_type\`. The setup's defining condition is verif
 - Entry (code-verified): call \`get_trend_signal(symbol)\` first. Requires breakout_up_20/55 (long) or breakout_down_20/55 (short) AND volume ≥ 1.25× the 20d average. Trend regimes only.
 - Exit: exit_criteria.trailing_stop_pct seeded from the tool's suggestedTrailingStopPct. Wide stop, let it run.
 
-**D_discretionary** — anything else (Polymarket, news catalysts, novel ideas). Scout size only (code-enforced). If it deserves conviction size, it should fit S1/S2/S3.
+**D_discretionary** — anything else (Polymarket, news catalysts, novel ideas). Scout size only, and only ONE open D at a time (both code-enforced). D is a learning slot, not a trading strategy — never open a D trade because "the run needs a trade". If it deserves conviction size, it should fit S1/S2/S3.
+
+**One bet per instrument+direction (code-enforced):** a second same-direction position on an instrument you already hold is the SAME bet twice (AP-4), whatever setup_type you give it. Manage the existing position instead.
 
 **Regime gating (which setups to hunt for):**
 - fear → S1 (primary), S2

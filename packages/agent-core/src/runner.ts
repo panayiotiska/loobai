@@ -13,6 +13,7 @@ import {
   getSystemState,
   markNotesConsumed,
   getRunsWithoutFormulaUpdate,
+  failStaleRuns,
 } from '@loob/db';
 
 import { buildSystemPrompt } from './prompts/system.js';
@@ -41,6 +42,15 @@ export async function runTick(kind: RunKind): Promise<void> {
   const db = createServiceClient();
 
   log.info({ msg: 'tick starting', kind });
+
+  // Zombie-run sweep: rows stuck in 'running' after a cancelled/timed-out
+  // workflow would otherwise pollute run history forever. Best-effort.
+  try {
+    const swept = await failStaleRuns(db, 30);
+    if (swept > 0) log.warn({ msg: 'stale running runs marked failed', swept });
+  } catch (e) {
+    log.warn({ msg: 'stale-run sweep skipped', err: String(e) });
+  }
 
   // Kill-switch gate — checked BEFORE creating a run row so paused ticks
   // are recorded as failed-with-reason rather than swallowed silently.

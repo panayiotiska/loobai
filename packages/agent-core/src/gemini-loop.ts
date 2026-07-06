@@ -114,12 +114,15 @@ export interface GeminiLoopInput {
 // Injected once, when a research run is about to end with zero trades opened.
 // Keeps history + tools intact so the model can actually call paper_trade_open.
 const TRADE_DECISION_NUDGE =
-  'You are about to end this run without opening a position. That is the failure mode we are explicitly fighting: ' +
-  'open positions and realized PnL have been ZERO for many consecutive runs because the agent keeps researching and then skipping. ' +
-  'Make an EXPLICIT decision now on your single best candidate from the scans above:\n' +
-  '- If it clears the SCOUT bar — confidence ≥ 0.55, ≥1 confirming signal, three-perspective views (retail/institutional/adversarial, each ≥20 chars), ' +
-  'and a concrete invalidation_signal — then call `paper_trade_open` NOW with size_class="scout". Scouts are small and exist to LEARN; prefer a scout to a no-op.\n' +
-  '- Only if NO candidate clears even the scout bar, skip — and then emit the RunOutput JSON whose nextRunFocus names the exact observable that would create a setup.\n' +
+  'You are about to end this run without opening a position. Make an EXPLICIT decision now — and note that ' +
+  'BOTH outcomes are equally valid runs:\n' +
+  '- If your best candidate genuinely fits a setup (S1_funding_squeeze / S2_carry_harvest / S3_trend_breakout, code-verified) ' +
+  'and clears the scout bar (confidence ≥ 0.55, ≥1 confirming signal, three-perspective views, concrete invalidation_signal), ' +
+  'call `paper_trade_open` NOW.\n' +
+  '- If NO candidate fits a setup, SKIP: emit the RunOutput JSON whose nextRunFocus names the exact observable that would create one ' +
+  '(e.g. "any perp funding ≤ −30% annualized" or "BTC daily close above prior 20d high on ≥1.25× volume").\n' +
+  'Do NOT open a D_discretionary trade merely to satisfy this prompt — a forced trade in a setup-less market is how mid-June bled fees ' +
+  '(anti-pattern AP-6). When the market offers no setup, the correct position size is zero, and saying so with a concrete trigger IS a successful run.\n' +
   'Do not narrate or analyze further. Your next action must be either a paper_trade_open call or the final fenced json RunOutput block.';
 
 export interface GeminiLoopResult {

@@ -38,7 +38,39 @@ const MAX_ITERATIONS: Record<RunKind, number> = {
   monitor: 4,
 };
 
-export async function runTick(kind: RunKind): Promise<void> {
+export interface RunTickOptions {
+  /**
+   * When true, a tick that fails with a TRANSIENT Gemini error records the
+   * failed run row but skips the Telegram error page — the caller has
+   * committed to retrying the whole tick and will page if that also fails.
+   * Non-transient failures always page regardless of this flag.
+   */
+  deferTransientErrorNotify?: boolean;
+}
+
+// One whole-tick retry for transient Gemini outages. The in-loop retry budget
+// (~3.6min) covers blips; sustained 500 windows outlast it and were failing
+// ~16% of research ticks (18 of 146, June–July 2026). A second full attempt
+// after a real pause converts most of those into a delayed success.
+const TICK_RETRY_DELAY_MS = 120_000;
+
+export async function runTickWithRetry(kind: RunKind): Promise<void> {
+  try {
+    await runTick(kind, { deferTransientErrorNotify: true });
+  } catch (e) {
+    if (!isTransientGeminiError(e)) throw e;
+    log.warn({
+      msg: 'tick failed on transient Gemini error — retrying whole tick once',
+      kind,
+      delayMs: TICK_RETRY_DELAY_MS,
+      err: String(e).slice(0, 300),
+    });
+    await new Promise((resolve) => setTimeout(resolve, TICK_RETRY_DELAY_MS));
+    await runTick(kind);
+  }
+}
+
+export async function runTick(kind: RunKind, opts: RunTickOptions = {}): Promise<void> {
   const db = createServiceClient();
 
   log.info({ msg: 'tick starting', kind });
@@ -332,7 +364,11 @@ export async function runTick(kind: RunKind): Promise<void> {
       log.warn({ msg: 'consecutive-failure count failed', err: String(e) });
     }
 
-    await sendTelegramError(run.id, err, { consecutiveFailures });
+    if (opts.deferTransientErrorNotify && isTransientGeminiError(err)) {
+      log.warn({ msg: 'transient failure — Telegram page deferred to retry attempt', runId: run.id });
+    } else {
+      await sendTelegramError(run.id, err, { consecutiveFailures });
+    }
     throw err;
   }
 

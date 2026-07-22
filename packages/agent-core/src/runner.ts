@@ -78,7 +78,10 @@ export async function runTick(kind: RunKind, opts: RunTickOptions = {}): Promise
   // Zombie-run sweep: rows stuck in 'running' after a cancelled/timed-out
   // workflow would otherwise pollute run history forever. Best-effort.
   try {
-    const swept = await failStaleRuns(db, 30);
+    // Threshold must exceed the research workflow timeout (55m): input-TPM
+    // pacing makes legitimate research attempts run ~20-25m, and a row must
+    // only be swept when no live job could still own it.
+    const swept = await failStaleRuns(db, 65);
     if (swept > 0) log.warn({ msg: 'stale running runs marked failed', swept });
   } catch (e) {
     log.warn({ msg: 'stale-run sweep skipped', err: String(e) });

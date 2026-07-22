@@ -10,7 +10,10 @@ on:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    # Input-TPM pacing means ~1 model request/min: 4 iterations + wrap-up ≈ 5m
+    # of model time, plus setup and retries. Monitor degrades to sweeps-only on
+    # sustained LLM failure, so this rarely binds.
+    timeout-minutes: 18
     concurrency:
       group: loob-agent
       cancel-in-progress: false

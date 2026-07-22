@@ -6,11 +6,13 @@ on:
 jobs:
   research:
     runs-on: ubuntu-latest
-    # Must stay BELOW the 30m failStaleRuns sweep threshold: a job killed at
+    # Must stay BELOW the 65m failStaleRuns sweep threshold: a job killed at
     # this timeout leaves a zombie 'running' row, and the sweep must never
-    # fire while a legitimate attempt could still be alive. 25 covers a flaky
-    # first attempt + 2m retry pause + full second attempt.
-    timeout-minutes: 25
+    # fire while a legitimate attempt could still be alive. Input-TPM pacing
+    # (16k tokens/min free tier ≈ 1 request/min) makes a full 18-iteration
+    # attempt ~20-25m; 55 covers setup + first attempt + 2m retry pause +
+    # full second attempt.
+    timeout-minutes: 55
     concurrency:
       group: loob-agent
       cancel-in-progress: false

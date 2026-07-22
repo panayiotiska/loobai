@@ -178,5 +178,6 @@ await insertNote(db, 'web', text);
 - **Always rebuild after editing `packages/`** — `apps/agent` and `apps/web` import from `dist/`, not `src/`. Running `pnpm build` (or per-package `pnpm --filter @loob/agent-core build`) is required for changes to take effect.
 - **`.env` is root-level, not in `apps/`** — local agent scripts use `dotenv -e ../../.env` to load it. The web app uses `apps/web/.env.local`.
 - **Supabase magic link rate limit** — 3 emails/hour on free tier. Don't spam the login button.
-- **Gemini 503s are transient** — the loop retries up to 3 times with 15s/30s backoff. If it keeps failing, Gemini is overloaded; try again later.
+- **Gemini 503s are transient** — the loop retries with backoff and honors 429 RetryInfo delays. If it keeps failing, Gemini is overloaded; try again later.
+- **Free-tier input quota is 16k tokens/MINUTE for gemma-4-26b** — the whole per-minute budget fits roughly ONE full-context request. `gemini-loop.ts` paces requests against a sliding window, prunes history to a char budget, and truncates tool results; `FORMULA_MAX_CHARS` (15k) caps the formula because the full document rides in the system prompt on every request. If research ticks start 429-failing again, first check whether the base prompt (formula + tool declarations) has grown — a single request over ~16k input tokens can NEVER succeed, no matter the retries.
 - **`NEXT_PUBLIC_` prefix required** — env vars used in client components must be prefixed `NEXT_PUBLIC_`. Server-only vars (service role key) must NOT have this prefix.

@@ -47,6 +47,89 @@ const DEFAULT_TOOL_CAP = 12;
 // Keep history bounded — observed prod spike was 216k input tokens in one run.
 const MAX_HISTORY_ENTRIES = 24;
 
+// ---------------------------------------------------------------------------
+// Free-tier input-token pacing.
+//
+// The Gemini API free tier caps gemma-4-26b at 16,000 INPUT tokens per model
+// per minute (quotaId GenerateContentInputTokensPerModelPerMinute-FreeTier).
+// Two consequences the loop must engineer around:
+//   1. Two mid-size requests in the same minute exhaust the bucket → 429.
+//   2. A single request whose prompt alone exceeds ~16k tokens can NEVER
+//      succeed, no matter how long we back off.
+// Observed 2026-07-20→22: FORMULA growth pushed the research base request to
+// ~15.4k tokens and every research tick died on sustained 429s by iteration 2.
+//
+// Fix: (a) estimate each request's input tokens and wait until the trailing
+// 60s window has room before firing; (b) prune history to a char budget so a
+// single request always fits; (c) truncate oversized tool results.
+// ---------------------------------------------------------------------------
+const INPUT_TPM_LIMIT = 16_000;
+/** Headroom for tokenizer-estimate error + the countTokens/actual gap. */
+const INPUT_TPM_SAFETY = 800;
+/** Measured on prod prompts: system prompt 3.60 chars/token, tool-decl JSON 3.98. */
+const APPROX_CHARS_PER_TOKEN = 3.6;
+/** Cap on the JSON of a single tool result entering model history (full result still goes to DB). */
+const MAX_TOOL_RESULT_CHARS = 4_000;
+/** Never squeeze the conversation below this many chars, even with a huge base prompt. */
+const HISTORY_CHAR_FLOOR = 8_000;
+
+export function approxTokens(chars: number): number {
+  return Math.ceil(chars / APPROX_CHARS_PER_TOKEN);
+}
+
+// Sliding 60s window of input tokens sent to the model. Module-level on
+// purpose: one tick process makes several runGeminiLoop calls (main loop,
+// trade nudge, formula wrap-up, corrective follow-up) and they all share the
+// same per-minute bucket.
+const sentTokenWindow: Array<{ at: number; tokens: number }> = [];
+
+function tokensInWindow(now: number): number {
+  while (sentTokenWindow.length > 0 && now - sentTokenWindow[0].at > 60_000) {
+    sentTokenWindow.shift();
+  }
+  return sentTokenWindow.reduce((sum, e) => sum + e.tokens, 0);
+}
+
+function recordSentTokens(tokens: number): void {
+  sentTokenWindow.push({ at: Date.now(), tokens });
+}
+
+async function waitForTokenBudget(
+  estimate: number,
+  ctx: { runId: string; phase: string },
+): Promise<void> {
+  // An estimate at/over the whole budget can never "fit" — the best we can do
+  // is fire it into an empty window (the estimate is conservative; the real
+  // request is usually smaller). Without this clamp the wait would never end.
+  const needed = Math.min(estimate, INPUT_TPM_LIMIT - INPUT_TPM_SAFETY);
+  for (;;) {
+    const now = Date.now();
+    const used = tokensInWindow(now);
+    if (used + needed <= INPUT_TPM_LIMIT - INPUT_TPM_SAFETY) return;
+    const waitMs = Math.max(
+      sentTokenWindow.length > 0 ? sentTokenWindow[0].at + 61_000 - now : 61_000,
+      1_000,
+    );
+    log.info({
+      msg: 'input-TPM pacing: waiting for token budget',
+      runId: ctx.runId,
+      phase: ctx.phase,
+      windowTokens: used,
+      nextRequestEstimate: needed,
+      waitMs,
+    });
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
+}
+
+function estimateHistoryChars(history: Content[]): number {
+  return JSON.stringify(history).length;
+}
+
+function estimateRequestTokens(systemPromptChars: number, declsChars: number, history: Content[]): number {
+  return approxTokens(systemPromptChars + declsChars + estimateHistoryChars(history)) + 100;
+}
+
 // Transient upstream failures worth retrying (and, for monitor ticks, degrading
 // on): retryable HTTP statuses plus node-level network errors. @google/genai's
 // ApiError carries .status; when absent (network layer) fall back to message
@@ -69,22 +152,55 @@ export function isTransientGeminiError(e: unknown): boolean {
 // outlasted all retries and failed a monitor tick.
 const RETRY_DELAYS_MS = [10_000, 25_000, 60_000, 120_000];
 
-async function generateWithRetry<T>(
+// 429 quota errors carry an explicit RetryInfo delay ("Please retry in 7.7s" /
+// retryDelay:"56s"). Waiting exactly that (plus margin) beats the blind ladder.
+export function parseRetryDelayMs(e: unknown): number | null {
+  const msg = e instanceof Error ? e.message : String(e);
+  const m = msg.match(/retry in (\d+(?:\.\d+)?)\s*s/i) ?? msg.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
+  return m ? Math.ceil(Number(m[1]) * 1000) : null;
+}
+
+function isQuotaError(e: unknown): boolean {
+  if ((e as { status?: number }).status === 429) return true;
+  return /RESOURCE_EXHAUSTED|"code"\s*:\s*429/.test(e instanceof Error ? e.message : String(e));
+}
+
+interface RetryContext {
+  runId: string;
+  phase: string;
+  /** Estimated input tokens of the request — reserved in the TPM window before every attempt. */
+  estimateTokens?: number;
+}
+
+async function generateWithRetry<T extends { usageMetadata?: { promptTokenCount?: number } } | void>(
   call: () => Promise<T>,
-  ctx: { runId: string; phase: string },
+  ctx: RetryContext,
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
+    if (ctx.estimateTokens) await waitForTokenBudget(ctx.estimateTokens, ctx);
     try {
-      return await call();
+      const result = await call();
+      const actual = (result as { usageMetadata?: { promptTokenCount?: number } } | undefined)
+        ?.usageMetadata?.promptTokenCount;
+      recordSentTokens(actual ?? ctx.estimateTokens ?? 0);
+      return result;
     } catch (e) {
       if (attempt >= RETRY_DELAYS_MS.length || !isTransientGeminiError(e)) throw e;
-      const delay = RETRY_DELAYS_MS[attempt] + Math.floor(Math.random() * 5000);
+      // Quota 429s: assume the failed attempt still burned the window and honor
+      // the server's own retry delay if it is longer than our ladder.
+      const quota = isQuotaError(e);
+      if (quota && ctx.estimateTokens) recordSentTokens(ctx.estimateTokens);
+      const serverDelay = quota ? parseRetryDelayMs(e) : null;
+      const delay =
+        Math.max(RETRY_DELAYS_MS[attempt], serverDelay !== null ? serverDelay + 3_000 : 0) +
+        Math.floor(Math.random() * 5000);
       log.warn({
         msg: 'gemini transient error, retrying',
         runId: ctx.runId,
         phase: ctx.phase,
         attempt,
         delay,
+        quota,
         err: String(e).slice(0, 300),
       });
       await new Promise((r) => setTimeout(r, delay));
@@ -140,12 +256,24 @@ function stableStringify(value: unknown): string {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
 }
 
-function pruneHistory(history: Content[]): void {
-  if (history.length <= MAX_HISTORY_ENTRIES) return;
-  // Keep the first (initial user turn) and the last MAX-1 entries.
-  const keepFromEnd = MAX_HISTORY_ENTRIES - 1;
-  const tail = history.splice(history.length - keepFromEnd, keepFromEnd);
-  history.splice(1, history.length - 1, ...tail);
+// Prune oldest turns (keeping the seed user turn) until the history fits both
+// the entry cap and the char budget derived from the TPM limit. Removal is
+// pair-aware: a user turn holding only functionResponse parts must never
+// become the oldest survivor without its preceding model functionCall turn.
+export function pruneHistory(history: Content[], charBudget: number): void {
+  const dropOldest = () => {
+    history.splice(1, 1);
+    while (
+      history.length > 2 &&
+      history[1].role === 'user' &&
+      (history[1].parts ?? []).length > 0 &&
+      (history[1].parts ?? []).every((p) => p.functionResponse)
+    ) {
+      history.splice(1, 1);
+    }
+  };
+  while (history.length > MAX_HISTORY_ENTRIES) dropOldest();
+  while (history.length > 3 && estimateHistoryChars(history) > charBudget) dropOldest();
 }
 
 export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopResult> {
@@ -154,12 +282,8 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
 
   const genai = new GoogleGenAI({ apiKey });
 
-  const history: Content[] = [
-    {
-      role: 'user',
-      parts: [{ text: 'Begin your analysis. Use tools as needed, then emit the RunOutput JSON block.' }],
-    },
-  ];
+  const SEED_TEXT = 'Begin your analysis. Use tools as needed, then emit the RunOutput JSON block.';
+  const history: Content[] = [{ role: 'user', parts: [{ text: SEED_TEXT }] }];
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let finalText = '';
@@ -172,8 +296,46 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
   let paperTradeOpenedThisRun = false;
   let tradeDecisionNudged = false;
 
+  // Char budget for conversation history: whatever the TPM soft cap leaves
+  // after the fixed base (system prompt + tool declarations), floored so the
+  // loop still functions if the base prompt is bloated (with a loud warning).
+  const declsChars = JSON.stringify(input.toolDeclarations).length;
+  const baseTokens = approxTokens(input.systemPrompt.length + declsChars) + 100;
+  const budgetChars = (INPUT_TPM_LIMIT - INPUT_TPM_SAFETY - baseTokens) * APPROX_CHARS_PER_TOKEN;
+  const historyCharBudget = Math.max(budgetChars, HISTORY_CHAR_FLOOR);
+  if (budgetChars < HISTORY_CHAR_FLOOR) {
+    log.warn({
+      msg: 'base prompt leaves too little history budget under the input-TPM limit — requests may 429',
+      runId: input.runId,
+      baseTokens,
+      systemPromptChars: input.systemPrompt.length,
+      declsChars,
+    });
+  }
+
   for (let iteration = 0; iteration < input.maxIterations; iteration++) {
-    pruneHistory(history);
+    pruneHistory(history, historyCharBudget);
+
+    // Anti-amnesia ledger: pruning can drop early tool results (the startup
+    // ritual), and the model then re-runs the ritual from scratch — observed
+    // burning 9 of 18 iterations on cached read_lessons_learned /
+    // get_portfolio_stats loops. Keep a compact record of what already ran in
+    // the always-surviving seed turn.
+    if (toolCallCount.size > 0) {
+      const ledger = [...toolCallCount.entries()].map(([n, c]) => `${n}(×${c})`).join(', ');
+      history[0] = {
+        role: 'user',
+        parts: [
+          {
+            text:
+              `${SEED_TEXT}\n\n[Auto-maintained context ledger — older turns are compacted to fit the per-minute token quota] ` +
+              `Tools ALREADY CALLED this run: ${ledger}. You have already seen their results — calling them again with the same args ` +
+              `returns an identical cached copy and wastes an iteration. Move on to the NEXT phase of your workflow.`,
+          },
+        ],
+      };
+    }
+
     log.info({ msg: 'gemini iteration', runId: input.runId, iteration });
 
     const response = await generateWithRetry(
@@ -187,7 +349,11 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
             temperature: 0.7,
           },
         }),
-      { runId: input.runId, phase: 'tool-loop' },
+      {
+        runId: input.runId,
+        phase: 'tool-loop',
+        estimateTokens: estimateRequestTokens(input.systemPrompt.length, declsChars, history),
+      },
     );
 
     totalInputTokens += response.usageMetadata?.promptTokenCount ?? 0;
@@ -297,10 +463,21 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
         }
       }
 
+      // Truncate oversized results before they enter model history — the full
+      // result is already persisted to tool_calls above. A single 20k-char
+      // orderbook dump would eat the whole per-minute input-token budget.
+      let resultJson = JSON.stringify(result);
+      if (resultJson.length > MAX_TOOL_RESULT_CHARS) {
+        const dropped = resultJson.length - MAX_TOOL_RESULT_CHARS;
+        resultJson =
+          resultJson.slice(0, MAX_TOOL_RESULT_CHARS) +
+          ` …[result truncated: ${dropped} chars omitted — call again with narrower args if you need the tail]`;
+      }
+
       toolResultParts.push({
         functionResponse: {
           name,
-          response: { result: JSON.stringify(result) },
+          response: { result: resultJson },
         },
       });
     }
@@ -332,6 +509,7 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
       ],
     });
 
+    pruneHistory(history, historyCharBudget);
     const wrapupResponse = await generateWithRetry(
       () =>
         genai.models.generateContent({
@@ -343,7 +521,11 @@ export async function runGeminiLoop(input: GeminiLoopInput): Promise<GeminiLoopR
             temperature: 0.3,
           },
         }),
-      { runId: input.runId, phase: 'wrap-up' },
+      {
+        runId: input.runId,
+        phase: 'wrap-up',
+        estimateTokens: estimateRequestTokens(input.systemPrompt.length, 0, history),
+      },
     );
     if (wrapupResponse) {
       totalInputTokens += wrapupResponse.usageMetadata?.promptTokenCount ?? 0;

@@ -147,6 +147,7 @@ If NO setup clears even the scout bar across 10+ instruments scanned, set \`next
 - If you've done 6 consecutive runs without a formula update, write an "I am not seeing edge yet" version that updates regime, watchlist, and what would change your mind.
 - "General refinement" is NOT a valid changelog reason.
 - **FORMULA edits are INCREMENTAL.** Emit the FULL document each time, preserving the "## Setups", "## Hypotheses", "## Anti-pattern log", and "## Recent lessons" sections. A validation guard REJECTS versions that are short (<1500 chars), missing those sections, or >40% smaller than the previous version. Never emit a placeholder, summary, or diff as the formula.
+- **FORMULA has a hard size budget: 15,000 characters (guard-enforced).** The full document rides in every model request. Keep only the last ~8 Changelog entries and the ~10 most recent lessons; compact or drop older ones when adding new material. NEVER inline old versions or archives verbatim — every historical version is preserved automatically in the database.
 
 ### Phase 6 — Emit RunOutput
 End your response with one fenced \`\`\`json block matching the schema below.`

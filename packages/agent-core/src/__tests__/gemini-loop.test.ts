@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeJsonBlock, computeLlmCostUsd, parseRunOutput, isTransientGeminiError } from '../gemini-loop.js';
+import {
+  sanitizeJsonBlock,
+  computeLlmCostUsd,
+  parseRunOutput,
+  isTransientGeminiError,
+  parseRetryDelayMs,
+  pruneHistory,
+} from '../gemini-loop.js';
+import type { Content } from '@google/genai';
 
 describe('sanitizeJsonBlock', () => {
   it('replaces bare undefined values with null so JSON.parse succeeds', () => {
@@ -120,5 +128,61 @@ describe('isTransientGeminiError', () => {
     expect(isTransientGeminiError(apiError)).toBe(true);
     const badRequest = new Error('{"error":{"code":400,"message":"Invalid argument.","status":"INVALID_ARGUMENT"}}');
     expect(isTransientGeminiError(badRequest)).toBe(false);
+  });
+});
+
+describe('parseRetryDelayMs', () => {
+  it('parses the prose form ("Please retry in 7.774300322s")', () => {
+    expect(parseRetryDelayMs(new Error('Quota exceeded. Please retry in 7.774300322s.'))).toBe(7775);
+  });
+
+  it('parses the RetryInfo JSON form ("retryDelay":"56s")', () => {
+    expect(parseRetryDelayMs(new Error('{"details":[{"retryDelay":"56s"}]}'))).toBe(56000);
+  });
+
+  it('returns null when no delay is present', () => {
+    expect(parseRetryDelayMs(new Error('Internal error'))).toBeNull();
+  });
+});
+
+describe('pruneHistory', () => {
+  const text = (role: 'user' | 'model', chars: number): Content => ({
+    role,
+    parts: [{ text: 'x'.repeat(chars) }],
+  });
+  const toolPair = (chars: number): Content[] => [
+    { role: 'model', parts: [{ functionCall: { name: 'get_crypto_price', args: {} } }] },
+    { role: 'user', parts: [{ functionResponse: { name: 'get_crypto_price', response: { result: 'y'.repeat(chars) } } }] },
+  ];
+
+  it('leaves small histories untouched', () => {
+    const history = [text('user', 50), text('model', 50)];
+    pruneHistory(history, 100_000);
+    expect(history).toHaveLength(2);
+  });
+
+  it('drops oldest turns past the char budget, keeping the seed turn', () => {
+    const seed = text('user', 20);
+    const history = [seed, text('model', 5_000), text('user', 5_000), text('model', 5_000)];
+    pruneHistory(history, 12_000);
+    expect(history[0]).toBe(seed);
+    expect(JSON.stringify(history).length).toBeLessThanOrEqual(12_000);
+    expect(history.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('never leaves an orphaned functionResponse as the oldest non-seed turn', () => {
+    const seed = text('user', 20);
+    const history = [seed, ...toolPair(6_000), ...toolPair(6_000), text('model', 500)];
+    pruneHistory(history, 10_000);
+    const first = history[1];
+    const parts = first.parts ?? [];
+    expect(parts.length > 0 && parts.every((p) => p.functionResponse)).toBe(false);
+  });
+
+  it('enforces the entry cap', () => {
+    const history: Content[] = [text('user', 10)];
+    for (let i = 0; i < 40; i++) history.push(text(i % 2 ? 'user' : 'model', 10));
+    pruneHistory(history, 1_000_000);
+    expect(history.length).toBeLessThanOrEqual(24);
   });
 });

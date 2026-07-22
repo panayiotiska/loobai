@@ -18,6 +18,14 @@ export interface FormulaValidation {
 export const FORMULA_MIN_CHARS = 1500;
 /** Reject a new version smaller than this fraction of the previous one. */
 export const FORMULA_MIN_SIZE_RATIO = 0.6;
+/**
+ * Reject a new version larger than this. The FULL document is embedded in the
+ * system prompt every request, and the Gemma free tier allows only 16k input
+ * tokens/minute — FORMULA growth past ~22k chars (v148, 2026-07-20) pushed the
+ * base request over the whole per-minute budget and every research tick 429'd.
+ * History is never lost to compaction: old versions live in formula_versions.
+ */
+export const FORMULA_MAX_CHARS = 15_000;
 
 export const REQUIRED_FORMULA_SECTIONS: Array<{ label: string; re: RegExp }> = [
   { label: '## Setups', re: /^#{1,3}\s*setups?\b/im },
@@ -46,6 +54,31 @@ export function validateFormulaUpdate(
     };
   }
 
+  if (content.length > FORMULA_MAX_CHARS) {
+    return {
+      ok: false,
+      reason:
+        `FORMULA update rejected: new content is ${content.length} chars (max ${FORMULA_MAX_CHARS}). ` +
+        'The full document rides in every model request and must stay small. Compact it: keep only the ' +
+        'last ~8 Changelog entries and the ~10 most recent lessons, and NEVER inline old versions verbatim — ' +
+        'full history is preserved automatically in the formula_versions table. Do not delete the required ' +
+        'sections (## Setups, ## Hypotheses, ## Anti-pattern log, ## Recent lessons).',
+    };
+  }
+
+  // Prompt-leakage guard: wrap-up/corrective prompts contain "## Directive" and
+  // "## Output contract" sections; v148 showed the agent echoing them INTO the
+  // strategy document. They are never legitimate formula content.
+  const leaked = ['## Directive', '## Output contract'].filter((h) => content.includes(h));
+  if (leaked.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `FORMULA update rejected: contains prompt-instruction section(s) that do not belong in a strategy ` +
+        `document: ${leaked.join(', ')}. Remove them and re-emit the document.`,
+    };
+  }
+
   const missing = REQUIRED_FORMULA_SECTIONS.filter((s) => !s.re.test(content));
   if (missing.length > 0) {
     return {
@@ -58,7 +91,11 @@ export function validateFormulaUpdate(
   }
 
   const prev = previous?.content?.trim() ?? '';
-  if (prev.length >= FORMULA_MIN_CHARS && content.length < prev.length * FORMULA_MIN_SIZE_RATIO) {
+  // When the previous version is over the size cap, a large shrink is the
+  // REQUIRED move (compaction), not a wipe — the min-chars and required-section
+  // checks above still protect against destructive updates.
+  const shrinkGuardActive = prev.length <= FORMULA_MAX_CHARS;
+  if (shrinkGuardActive && prev.length >= FORMULA_MIN_CHARS && content.length < prev.length * FORMULA_MIN_SIZE_RATIO) {
     const shrinkPct = Math.round((1 - content.length / prev.length) * 100);
     return {
       ok: false,

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" width="1000" height="620" role="img" aria-label="The Loob research loop">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#e94560"/></marker>
+    <filter id="g" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1000" height="620" rx="20" fill="#16213e"/>
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+    <!-- orbit -->
+    <ellipse id="orbit" cx="500" cy="310" rx="330" ry="215" fill="none" stroke="#e94560" stroke-opacity=".45" stroke-width="2" stroke-dasharray="6 8">
+      <animate attributeName="stroke-dashoffset" from="0" to="-56" dur="3s" repeatCount="indefinite"/>
+    </ellipse>
+    <circle r="7" fill="#fff" filter="url(#g)"><animateMotion dur="14s" repeatCount="indefinite" rotate="auto"><mpath href="#orbit"/></animateMotion></circle>
+
+    <!-- center -->
+    <rect x="370" y="250" width="260" height="120" rx="16" fill="#0f3460" stroke="#e94560" stroke-width="2"/>
+    <text x="500" y="298" text-anchor="middle" font-size="26" font-weight="700" fill="#fff" font-family="'SF Mono',Menlo,Consolas,monospace">FORMULA.md</text>
+    <text x="500" y="326" text-anchor="middle" font-size="14" fill="#c8d8e8">the living strategy</text>
+    <text x="500" y="346" text-anchor="middle" font-size="14" fill="#7a8fa6">versioned · guarded · append-only</text>
+
+    <!-- nodes -->
+    <g text-anchor="middle">
+      <g transform="translate(500,95)"><rect x="-120" y="-34" width="240" height="68" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-6" font-size="17" font-weight="700" fill="#fff">① Wake up</text><text y="18" font-size="13" fill="#c8d8e8">GitHub Actions cron · every 4h</text></g>
+      <g transform="translate(820,190)"><rect x="-130" y="-34" width="260" height="68" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-6" font-size="17" font-weight="700" fill="#fff">② Startup ritual</text><text y="18" font-size="13" fill="#c8d8e8">lessons · stats · past runs · regime</text></g>
+      <g transform="translate(820,430)"><rect x="-130" y="-34" width="260" height="68" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-6" font-size="17" font-weight="700" fill="#fff">③ Breadth scan</text><text y="18" font-size="13" fill="#c8d8e8">~30 perps · movers · Polymarket</text></g>
+      <g transform="translate(500,525)"><rect x="-130" y="-34" width="260" height="68" rx="14" fill="#e94560" fill-opacity=".2" stroke="#e94560" stroke-width="2"/><text y="-6" font-size="17" font-weight="700" fill="#fff">④ Setup gate (code)</text><text y="18" font-size="13" fill="#c8d8e8">live data must confirm the setup</text></g>
+      <g transform="translate(180,430)"><rect x="-130" y="-34" width="260" height="68" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-6" font-size="17" font-weight="700" fill="#fff">⑤ Paper trade</text><text y="18" font-size="13" fill="#c8d8e8">trailing stops · carry accrual</text></g>
+      <g transform="translate(180,190)"><rect x="-130" y="-34" width="260" height="68" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-6" font-size="17" font-weight="700" fill="#fff">⑥ Postmortem</text><text y="18" font-size="13" fill="#c8d8e8">skill vs luck · lesson → formula</text></g>
+    </g>
+    <!-- Telegram + 15 min monitor badge -->
+    <g transform="translate(820,95)" text-anchor="middle"><rect x="-110" y="-24" width="220" height="48" rx="24" fill="none" stroke="#7a8fa6" stroke-dasharray="4 4"/><text y="5" font-size="14" fill="#c8d8e8">+ monitor ticks every ~15 min</text></g>
+    <g transform="translate(180,95)" text-anchor="middle"><rect x="-110" y="-24" width="220" height="48" rx="24" fill="none" stroke="#7a8fa6" stroke-dasharray="4 4"/><text y="5" font-size="14" fill="#c8d8e8">→ Telegram summary</text></g>
+  </g>
+</svg>

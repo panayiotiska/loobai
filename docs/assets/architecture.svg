@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 440" width="1000" height="440" role="img" aria-label="System architecture">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#e94560"/></marker></defs>
+  <rect width="1000" height="440" rx="20" fill="#16213e"/>
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" text-anchor="middle">
+    <g stroke="#e94560" stroke-width="2" fill="none" marker-end="url(#a)" stroke-dasharray="6 6">
+      <path d="M200 215 H262"><animate attributeName="stroke-dashoffset" from="0" to="-24" dur="1.2s" repeatCount="indefinite"/></path>
+      <path d="M440 215 H512"><animate attributeName="stroke-dashoffset" from="0" to="-24" dur="1.2s" repeatCount="indefinite"/></path>
+      <path d="M660 160 L732 100"><animate attributeName="stroke-dashoffset" from="0" to="-24" dur="1.2s" repeatCount="indefinite"/></path>
+      <path d="M660 270 L732 330"><animate attributeName="stroke-dashoffset" from="0" to="-24" dur="1.2s" repeatCount="indefinite"/></path>
+    </g>
+
+    <g transform="translate(110,215)"><rect x="-90" y="-60" width="180" height="120" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-18" font-size="18" font-weight="700" fill="#fff">GitHub Actions</text><text y="8" font-size="13" fill="#c8d8e8">research · every 4h</text><text y="28" font-size="13" fill="#c8d8e8">monitor · every ~15m</text></g>
+
+    <g transform="translate(350,215)"><rect x="-90" y="-85" width="180" height="170" rx="14" fill="#e94560" fill-opacity=".18" stroke="#e94560" stroke-width="2"/><text y="-45" font-size="18" font-weight="700" fill="#fff">Agent core</text><text y="-18" font-size="13" fill="#c8d8e8">Gemma 4 26B tool loop</text><text y="4" font-size="13" fill="#c8d8e8">24 tools · paced to quota</text><text y="26" font-size="13" fill="#c8d8e8">formula guard</text><text y="48" font-size="13" fill="#c8d8e8">sizing ladder · auto-exits</text></g>
+
+    <g transform="translate(590,215)"><rect x="-80" y="-60" width="160" height="120" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-18" font-size="18" font-weight="700" fill="#fff">Supabase</text><text y="8" font-size="13" fill="#c8d8e8">runs · formula_versions</text><text y="28" font-size="13" fill="#c8d8e8">trades · notes · requests</text></g>
+
+    <g transform="translate(850,90)"><rect x="-110" y="-45" width="220" height="90" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-8" font-size="18" font-weight="700" fill="#fff">Laab Room</text><text y="16" font-size="13" fill="#c8d8e8">Next.js · walkable lab UI</text></g>
+    <g transform="translate(850,340)"><rect x="-110" y="-45" width="220" height="90" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-8" font-size="18" font-weight="700" fill="#fff">Telegram</text><text y="16" font-size="13" fill="#c8d8e8">summaries · /note · /resolve</text></g>
+
+    <!-- data sources -->
+    <g transform="translate(350,395)" font-size="13" fill="#7a8fa6"><text>Free data: CoinGecko · Binance/Bybit derivatives · Polymarket · news search</text></g>
+    <g transform="translate(350,52)" font-size="13" fill="#7a8fa6"><text>You steer it with notes — they outrank every trading rule</text></g>
+  </g>
+</svg>

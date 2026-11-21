@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400" role="img" aria-label="Loob.ai — an autonomous paper-trading research agent">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a1a2e"/><stop offset="1" stop-color="#0f3460"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e94560" stop-opacity="0"/><stop offset=".3" stop-color="#e94560"/><stop offset="1" stop-color="#ff8fa3"/>
+    </linearGradient>
+    <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e94560" stop-opacity=".28"/><stop offset="1" stop-color="#e94560" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#c8d8e8" stroke-opacity=".06"/>
+    </pattern>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1200" height="400" rx="20" fill="url(#bg)"/>
+  <rect width="1200" height="400" rx="20" fill="url(#grid)"/>
+
+  <!-- chart -->
+  <g transform="translate(520,60) scale(0.57,0.85)">
+  <path d="M0 300 L90 280 L170 295 L260 240 L340 262 L430 200 L520 225 L610 160 L700 185 L790 120 L880 150 L970 85 L1060 110 L1200 60 L1200 400 L0 400 Z" fill="url(#fill)"/>
+  <path id="p" d="M0 300 L90 280 L170 295 L260 240 L340 262 L430 200 L520 225 L610 160 L700 185 L790 120 L880 150 L970 85 L1060 110 L1200 60" fill="none" stroke="url(#line)" stroke-width="4" stroke-linejoin="round" filter="url(#glow)" stroke-dasharray="2000" stroke-dashoffset="2000">
+    <animate attributeName="stroke-dashoffset" from="2000" to="0" dur="3s" fill="freeze"/>
+  </path>
+  <circle r="6" fill="#fff" filter="url(#glow)"><animateMotion dur="3s" fill="freeze"><mpath href="#p"/></animateMotion></circle>
+
+  </g>
+
+  <!-- title -->
+  <text x="70" y="160" font-family="'SF Mono',Menlo,Consolas,monospace" font-size="84" font-weight="800" fill="#fff" letter-spacing="-2">LOOB<tspan fill="#e94560">.ai</tspan></text>
+  <text x="74" y="208" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="26" fill="#c8d8e8">An AI that paper-trades, writes its own playbook,</text>
+  <text x="74" y="242" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="26" fill="#c8d8e8">and gets graded by code — not by itself.</text>
+
+  <!-- pills -->
+  <g font-family="'SF Mono',Menlo,Consolas,monospace" font-size="15" fill="#c8d8e8">
+    <rect x="74" y="288" width="150" height="34" rx="17" fill="#e94560" fill-opacity=".18" stroke="#e94560"/><text x="94" y="310">every 4 hours</text>
+    <rect x="236" y="288" width="130" height="34" rx="17" fill="#c8d8e8" fill-opacity=".08" stroke="#7a8fa6"/><text x="256" y="310">paper only</text>
+    <rect x="378" y="288" width="196" height="34" rx="17" fill="#c8d8e8" fill-opacity=".08" stroke="#7a8fa6"/><text x="398" y="310">Gemma 4 · free tier</text>
+  </g>
+</svg>

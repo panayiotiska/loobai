@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 330" width="1000" height="330" role="img" aria-label="The four trade setups">
+  <rect width="1000" height="330" rx="20" fill="#16213e"/>
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+    <g transform="translate(30,30)">
+      <rect width="215" height="270" rx="14" fill="#0f3460" stroke="#e94560" stroke-width="2"/>
+      <text x="18" y="38" font-size="30" font-weight="800" fill="#e94560" font-family="'SF Mono',Menlo,monospace">S1</text>
+      <text x="18" y="66" font-size="16" font-weight="700" fill="#fff">Funding squeeze</text>
+      <text x="18" y="96" font-size="13" fill="#c8d8e8">Shorts are crowded.</text>
+      <text x="18" y="116" font-size="13" fill="#c8d8e8">Go long.</text>
+      <text x="18" y="152" font-size="12" fill="#7a8fa6">gate</text><text x="18" y="172" font-size="14" fill="#fff" font-family="'SF Mono',Menlo,monospace">funding ≤ −30%/yr</text>
+      <text x="18" y="206" font-size="12" fill="#7a8fa6">exit</text><text x="18" y="226" font-size="13" fill="#c8d8e8">trailing stop; breakeven</text><text x="18" y="244" font-size="13" fill="#c8d8e8">ratchet on funding flip</text>
+    </g>
+    <g transform="translate(255,30)">
+      <rect width="215" height="270" rx="14" fill="#0f3460" stroke="#7a8fa6"/>
+      <text x="18" y="38" font-size="30" font-weight="800" fill="#fff" font-family="'SF Mono',Menlo,monospace">S2</text>
+      <text x="18" y="66" font-size="16" font-weight="700" fill="#fff">Carry harvest</text>
+      <text x="18" y="96" font-size="13" fill="#c8d8e8">Longs overpay. Get paid</text>
+      <text x="18" y="116" font-size="13" fill="#c8d8e8">for the hedge.</text>
+      <text x="18" y="152" font-size="12" fill="#7a8fa6">gate</text><text x="18" y="172" font-size="14" fill="#fff" font-family="'SF Mono',Menlo,monospace">funding ≥ +30%/yr</text>
+      <text x="18" y="206" font-size="12" fill="#7a8fa6">exit</text><text x="18" y="226" font-size="13" fill="#c8d8e8">auto-close when carry</text><text x="18" y="244" font-size="13" fill="#c8d8e8">decays below +5%</text>
+    </g>
+    <g transform="translate(480,30)">
+      <rect width="215" height="270" rx="14" fill="#0f3460" stroke="#7a8fa6"/>
+      <text x="18" y="38" font-size="30" font-weight="800" fill="#fff" font-family="'SF Mono',Menlo,monospace">S3</text>
+      <text x="18" y="66" font-size="16" font-weight="700" fill="#fff">Trend breakout</text>
+      <text x="18" y="96" font-size="13" fill="#c8d8e8">Ride confirmed</text>
+      <text x="18" y="116" font-size="13" fill="#c8d8e8">momentum.</text>
+      <text x="18" y="152" font-size="12" fill="#7a8fa6">gate</text><text x="18" y="172" font-size="13" fill="#fff" font-family="'SF Mono',Menlo,monospace">20/55d break, 1.25× vol</text>
+      <text x="18" y="206" font-size="12" fill="#7a8fa6">exit</text><text x="18" y="226" font-size="13" fill="#c8d8e8">wide trailing stop,</text><text x="18" y="244" font-size="13" fill="#c8d8e8">let it run</text>
+    </g>
+    <g transform="translate(705,30)">
+      <rect width="265" height="270" rx="14" fill="#16213e" stroke="#7a8fa6" stroke-dasharray="6 5"/>
+      <text x="18" y="38" font-size="30" font-weight="800" fill="#7a8fa6" font-family="'SF Mono',Menlo,monospace">D</text>
+      <text x="18" y="66" font-size="16" font-weight="700" fill="#fff">Discretionary</text>
+      <text x="18" y="96" font-size="13" fill="#c8d8e8">Polymarket, news, odd ideas.</text>
+      <text x="18" y="116" font-size="13" fill="#c8d8e8">A learning slot, not a strategy.</text>
+      <text x="18" y="152" font-size="12" fill="#7a8fa6">gate</text><text x="18" y="172" font-size="14" fill="#fff" font-family="'SF Mono',Menlo,monospace">scout size, 1 open max</text>
+      <text x="18" y="206" font-size="12" fill="#7a8fa6">rule</text><text x="18" y="226" font-size="13" fill="#c8d8e8">must quote the market's</text><text x="18" y="244" font-size="13" fill="#c8d8e8">resolution criteria</text>
+    </g>
+  </g>
+</svg>

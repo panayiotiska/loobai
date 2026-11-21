@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 470" width="1000" height="470" role="img" aria-label="LLM proposes, code disposes">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#e94560"/></marker></defs>
+  <rect width="1000" height="470" rx="20" fill="#16213e"/>
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+    <!-- propose / dispose -->
+    <g text-anchor="middle">
+      <rect x="40" y="36" width="260" height="84" rx="14" fill="#0f3460" stroke="#7a8fa6"/>
+      <text x="170" y="72" font-size="20" font-weight="700" fill="#fff">LLM proposes</text>
+      <text x="170" y="98" font-size="13" fill="#c8d8e8">setup · size · stop · thesis</text>
+      <path d="M305 78 H395" stroke="#e94560" stroke-width="2.5" marker-end="url(#a)" stroke-dasharray="6 6"><animate attributeName="stroke-dashoffset" from="0" to="-24" dur="1.2s" repeatCount="indefinite"/></path>
+      <rect x="400" y="36" width="260" height="84" rx="14" fill="#e94560" fill-opacity=".2" stroke="#e94560" stroke-width="2"/>
+      <text x="530" y="72" font-size="20" font-weight="700" fill="#fff">Code disposes</text>
+      <text x="530" y="98" font-size="13" fill="#c8d8e8">verify · clamp · reject · auto-exit</text>
+      <path d="M665 78 H755" stroke="#e94560" stroke-width="2.5" marker-end="url(#a)" stroke-dasharray="6 6"><animate attributeName="stroke-dashoffset" from="0" to="-24" dur="1.2s" repeatCount="indefinite"/></path>
+      <rect x="760" y="36" width="200" height="84" rx="14" fill="#0f3460" stroke="#7a8fa6"/>
+      <text x="860" y="72" font-size="20" font-weight="700" fill="#fff">Paper trade</text>
+      <text x="860" y="98" font-size="13" fill="#c8d8e8">or a precise rejection</text>
+    </g>
+
+    <!-- incidents -->
+    <text x="40" y="170" font-size="14" font-weight="700" fill="#7a8fa6" letter-spacing="2">WHAT BROKE → WHAT CODE NOW ENFORCES</text>
+    <g font-size="14">
+      <g transform="translate(40,190)"><rect width="440" height="54" rx="10" fill="#0f3460"/><text x="16" y="23" fill="#e94560" font-weight="700">Formula wipe</text><text x="16" y="42" fill="#c8d8e8">3-char rewrite erased memory → size, section &amp; shrink guard</text></g>
+      <g transform="translate(40,254)"><rect width="440" height="54" rx="10" fill="#0f3460"/><text x="16" y="23" fill="#e94560" font-weight="700">Sizing paralysis</text><text x="16" y="42" fill="#c8d8e8">stuck at $25 forever → size ladder driven by realized results</text></g>
+      <g transform="translate(520,190)"><rect width="440" height="54" rx="10" fill="#0f3460"/><text x="16" y="23" fill="#e94560" font-weight="700">Winners cut early</text><text x="16" y="42" fill="#c8d8e8">+$2 exits that ran to +$40 → trailing stops, no closing winners</text></g>
+      <g transform="translate(520,254)"><rect width="440" height="54" rx="10" fill="#0f3460"/><text x="16" y="23" fill="#e94560" font-weight="700">Marginal-funding churn</text><text x="16" y="42" fill="#c8d8e8">−13% trades on a −30% rule → setup verified against live data</text></g>
+    </g>
+
+    <!-- ladder -->
+    <text x="40" y="350" font-size="14" font-weight="700" fill="#7a8fa6" letter-spacing="2">SIZE IS EARNED, PER SETUP</text>
+    <g text-anchor="middle" font-size="13">
+      <rect x="40" y="368" width="205" height="70" rx="12" fill="#0f3460" stroke="#7a8fa6"/><text x="142" y="395" font-size="22" font-weight="800" fill="#fff">$100</text><text x="142" y="420" fill="#c8d8e8">start here</text>
+      <rect x="275" y="368" width="205" height="70" rx="12" fill="#0f3460" stroke="#7a8fa6"/><text x="377" y="395" font-size="22" font-weight="800" fill="#fff">$250</text><text x="377" y="420" fill="#c8d8e8">10 trades, expectancy &gt; 0</text>
+      <rect x="510" y="368" width="205" height="70" rx="12" fill="#0f3460" stroke="#e94560"/><text x="612" y="395" font-size="22" font-weight="800" fill="#fff">$500</text><text x="612" y="420" fill="#c8d8e8">20 trades, PF ≥ 1.3</text>
+      <rect x="745" y="368" width="215" height="70" rx="12" fill="#e94560" fill-opacity=".25" stroke="#e94560" stroke-width="2"/><text x="852" y="395" font-size="22" font-weight="800" fill="#fff">$1000</text><text x="852" y="420" fill="#c8d8e8">30 trades, PF ≥ 1.5</text>
+      <g fill="#e94560"><path d="M260 403 l-10 -6 v12z"/><path d="M495 403 l-10 -6 v12z"/><path d="M730 403 l-10 -6 v12z"/></g>
+    </g>
+  </g>
+</svg>

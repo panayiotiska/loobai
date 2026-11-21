@@ -85,3 +85,59 @@ describe('digest', () => {
     expect(d).toMatch(/Do not chase weak funding/);
   });
 });
+
+import { similarityScore, recallSimilarCases } from '../learning.js';
+import type { ClosedTradeOutcome } from '@loob/db';
+
+const trade = (o: Partial<ClosedTradeOutcome>): ClosedTradeOutcome => ({
+  id: 'id-' + Math.random().toString(36).slice(2, 8),
+  instrument_id: 'SOL',
+  side: 'buy',
+  regime_at_entry: 'fear',
+  thesis: 'squeeze',
+  confidence: 0.7,
+  pnl_usd: 10,
+  size_usd: 100,
+  setup_type: 'S1_funding_squeeze',
+  closed_at: '2026-07-01T00:00:00Z',
+  postmortem: { thesis_correct: true, what_we_missed: 'nothing', luck_or_skill: 'skill', lesson: 'Held through the wick.' },
+  ...o,
+});
+
+describe('case-based recall', () => {
+  const q = { setup_type: 'S1_funding_squeeze' as const, instrument_id: 'sol', regime: 'FEAR', side: 'buy' };
+
+  it('scores setup + instrument + regime + side, case-insensitively', () => {
+    expect(similarityScore(trade({}), q)).toBe(9);
+    expect(similarityScore(trade({ instrument_id: 'ETH', regime_at_entry: 'chop', side: 'sell' }), q)).toBe(3);
+  });
+
+  it('returns the closest cases first with outcomes and lessons', () => {
+    const r = recallSimilarCases(
+      [trade({ instrument_id: 'ETH', pnl_usd: -5 }), trade({ pnl_usd: 20 }), trade({ setup_type: 'D_discretionary', instrument_id: 'XRP', regime_at_entry: 'chop' })],
+      q,
+    );
+    expect(r.cases[0].instrument_id).toBe('SOL');
+    expect(r.cases[0].lesson).toBe('Held through the wick.');
+    expect(r.matched).toBe(2);
+    expect(r.winRate).toBeCloseTo(0.5);
+  });
+
+  it('a side-only match is not a precedent', () => {
+    const r = recallSimilarCases([trade({ setup_type: 'D_discretionary', instrument_id: 'XRP', regime_at_entry: 'chop' })], q);
+    expect(r.matched).toBe(0);
+    expect(r.caveat).toMatch(/fresh experiment/);
+  });
+
+  it('warns that a handful of cases are anecdotes and caps at k', () => {
+    const many = Array.from({ length: 10 }, () => trade({}));
+    expect(recallSimilarCases(many, q, 4).cases).toHaveLength(4);
+    expect(recallSimilarCases(many.slice(0, 2), q).caveat).toMatch(/anecdotes/);
+  });
+
+  it('handles trades with no postmortem or size', () => {
+    const r = recallSimilarCases([trade({ postmortem: null, size_usd: 0 })], q);
+    expect(r.cases[0].lesson).toBeNull();
+    expect(r.cases[0].rewardPct).toBeNull();
+  });
+});

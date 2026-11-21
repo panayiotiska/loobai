@@ -25,8 +25,9 @@
     </g>
     <!-- bottom row -->
     <g transform="translate(40,315)" text-anchor="start">
-      <rect width="440" height="64" rx="12" fill="#0f3460"/><text x="16" y="26" font-size="15" font-weight="700" fill="#fff">Backtester</text><text x="16" y="48" font-size="13" fill="#c8d8e8">replays the S3 rule over ~3 years of daily candles</text>
-      <rect x="480" width="440" height="64" rx="12" fill="#0f3460"/><text x="496" y="26" font-size="15" font-weight="700" fill="#fff">Dataset export</text><text x="496" y="48" font-size="13" fill="#c8d8e8">context → decision → reward JSONL, ready for offline training</text>
+      <rect width="290" height="64" rx="12" fill="#0f3460"/><text x="16" y="26" font-size="15" font-weight="700" fill="#fff">Case recall</text><text x="16" y="48" font-size="13" fill="#c8d8e8">similar past trades + lessons</text>
+      <rect x="315" width="290" height="64" rx="12" fill="#0f3460"/><text x="331" y="26" font-size="15" font-weight="700" fill="#fff">Backtester</text><text x="331" y="48" font-size="13" fill="#c8d8e8">S3 rule over ~3 years of candles</text>
+      <rect x="630" width="290" height="64" rx="12" fill="#0f3460"/><text x="646" y="26" font-size="15" font-weight="700" fill="#fff">Dataset export</text><text x="646" y="48" font-size="13" fill="#c8d8e8">JSONL for offline prompt tuning</text>
     </g>
   </g>
 </svg>

@@ -38,9 +38,10 @@ The agent names a setup. **Code** checks the market and rejects the trade if the
 | ✅ **Scorecard injected into every prompt** | no reliance on the model asking for it |
 | ✅ **Confidence calibration** (stated vs realized win rate, Brier score) | overconfident bands get smaller size, never bigger |
 | ✅ **Bandit ranking** of setups (expectancy + exploration bonus) | advisory attention weights |
+| ✅ **Case-based recall** (`recall_similar_trades`) | before every trade: what happened last time in a comparable spot |
 | ✅ **Backtester** for the S3 breakout rule (`backtest_setup`) | ~3 years of daily candles |
 | ✅ **Dataset export** (`pnpm --filter @loob/agent run export-dataset`) | context → decision → reward JSONL |
-| ❌ Model weights are frozen | the export is the on-ramp to offline fine-tuning, not fine-tuning itself |
+| ➖ Model weights are frozen — on purpose | learning lives in memory and prompts, not training; the export leaves room for offline prompt optimization (e.g. GEPA) once there are ~100 closed trades |
 
 ## Architecture
 
@@ -49,7 +50,7 @@ The agent names a setup. **Code** checks the market and rejects the trade if the
 ```
 packages/shared      Zod schemas, formula guard
 packages/db          Supabase client, queries, migrations
-packages/agent-core  Gemma tool loop, 26 tools, sizing ladder, runner
+packages/agent-core  Gemma tool loop, 27 tools, sizing ladder, runner
 apps/agent           research-tick · monitor-tick entry points
 apps/web             Laab Room UI + Telegram webhook
 ```

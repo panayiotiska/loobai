@@ -139,7 +139,110 @@ export function rankSetups(breakdown: SetupBreakdown): SetupRank[] {
   return ranks.sort((a, b) => b.score - a.score);
 }
 
-// ---------- 3. Digest ----------
+// ---------- 3. Case-based recall ----------
+//
+// Retrieval, not training: before a trade, pull the closed trades that most
+// resemble it and show their outcomes + lessons. Structured matching (setup,
+// instrument, regime, side) is enough at this scale — no embeddings needed.
+
+export interface CaseQuery {
+  setup_type?: SetupType | null;
+  instrument_id?: string | null;
+  regime?: string | null;
+  side?: string | null;
+}
+
+export interface RecalledCase {
+  tradeId: string;
+  score: number;
+  setup_type: SetupType | null;
+  instrument_id: string;
+  side: string;
+  regime: string | null;
+  pnlUsd: number;
+  /** pnl / size — comparable across ladder tiers. */
+  rewardPct: number | null;
+  thesis: string;
+  luckOrSkill: string | null;
+  whatWeMissed: string | null;
+  lesson: string | null;
+  closedAt: string;
+}
+
+export interface CaseRecall {
+  matched: number;
+  winRate: number | null;
+  meanRewardPct: number | null;
+  /** Plain-language reliability warning so the model doesn't over-read 1–2 cases. */
+  caveat: string;
+  cases: RecalledCase[];
+}
+
+const W_SETUP = 3;
+const W_INSTRUMENT = 3;
+const W_REGIME = 2;
+const W_SIDE = 1;
+export const RECALL_MIN_RELIABLE = 4;
+
+const same = (a?: string | null, b?: string | null): boolean =>
+  !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+export function similarityScore(
+  t: Pick<ClosedTradeOutcome, 'setup_type' | 'instrument_id' | 'regime_at_entry' | 'side'>,
+  q: CaseQuery,
+): number {
+  let s = 0;
+  if (q.setup_type && t.setup_type === q.setup_type) s += W_SETUP;
+  if (same(t.instrument_id, q.instrument_id)) s += W_INSTRUMENT;
+  if (same(t.regime_at_entry, q.regime)) s += W_REGIME;
+  if (same(t.side, q.side)) s += W_SIDE;
+  return s;
+}
+
+export function recallSimilarCases(outcomes: ClosedTradeOutcome[], q: CaseQuery, k = 4): CaseRecall {
+  // A side-only match says nothing; require at least one substantive dimension.
+  const MIN_SCORE = Math.min(W_SETUP, W_INSTRUMENT, W_REGIME);
+  const scored = outcomes
+    .map((t) => ({ t, score: similarityScore(t, q) }))
+    .filter((x) => x.score >= MIN_SCORE)
+    // Best match first; ties broken by recency (outcomes arrive newest-first).
+    .sort((a, b) => b.score - a.score)
+    .slice(0, k);
+
+  const cases: RecalledCase[] = scored.map(({ t, score }) => ({
+    tradeId: t.id,
+    score,
+    setup_type: t.setup_type,
+    instrument_id: t.instrument_id,
+    side: t.side,
+    regime: t.regime_at_entry,
+    pnlUsd: t.pnl_usd,
+    rewardPct: t.size_usd ? (t.pnl_usd / t.size_usd) * 100 : null,
+    thesis: t.thesis.slice(0, 160),
+    luckOrSkill: t.postmortem?.luck_or_skill ?? null,
+    whatWeMissed: t.postmortem?.what_we_missed?.slice(0, 160) ?? null,
+    lesson: t.postmortem?.lesson?.slice(0, 160) ?? null,
+    closedAt: t.closed_at,
+  }));
+
+  const n = cases.length;
+  const wins = cases.filter((c) => c.pnlUsd > 0).length;
+  const rewards = cases.map((c) => c.rewardPct).filter((x): x is number => x != null);
+  return {
+    matched: n,
+    winRate: n ? wins / n : null,
+    meanRewardPct: rewards.length ? rewards.reduce((s, x) => s + x, 0) / rewards.length : null,
+    caveat:
+      n === 0
+        ? 'No comparable closed trades — this is a fresh experiment. Treat the thesis as unproven and size accordingly.'
+        : n < RECALL_MIN_RELIABLE
+          ? `Only ${n} comparable case${n === 1 ? '' : 's'} — anecdotes, not statistics. Use them to avoid repeating a known mistake, not as proof of edge.`
+          : `${n} comparable cases. Still small-sample; weigh the lessons above the averages.`,
+    cases,
+  };
+}
+
+// ---------- 4. Digest ----------
 
 export function formatLearningDigest(
   cal: Calibration,

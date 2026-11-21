@@ -31,7 +31,7 @@ import {
 import { getClosedTradesWithPostmortems, getClosedTradeOutcomes } from '@loob/db';
 import { getTrendSignal } from './trend.js';
 import { backtestBreakout } from '../backtest.js';
-import { computeCalibration, rankSetups } from '../learning.js';
+import { computeCalibration, rankSetups, recallSimilarCases } from '../learning.js';
 import { sizingTierForSetup, maxAllowedSize } from '../sizing.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -392,6 +392,20 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
         required: ['symbol'],
       },
     },
+    {
+      name: 'recall_similar_trades',
+      description: 'Case-based memory: retrieve the closed trades most similar to the one you are about to open (matched on setup_type, instrument, regime, side) with their P&L, luck-vs-skill verdict, what was missed, and the lesson. Call this BEFORE paper_trade_open. Pure retrieval from your own history — it tells you what happened last time in a comparable spot, not what will happen. Returns a reliability caveat; with fewer than 4 cases treat results as anecdotes.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          setup_type: { type: Type.STRING, description: '"S1_funding_squeeze", "S2_carry_harvest", "S3_trend_breakout" or "D_discretionary"' },
+          instrument_id: { type: Type.STRING, description: 'Instrument you are considering, e.g. "SOL"' },
+          regime: { type: Type.STRING, description: 'Current regime from assess_market_regime, e.g. "fear"' },
+          side: { type: Type.STRING, description: '"buy", "sell", "yes" or "no"' },
+        },
+        required: [],
+      },
+    },
   ];
 }
 
@@ -666,6 +680,23 @@ export function buildToolHandlers(
 
     get_trend_signal: async (args) => {
       return getTrendSignal(String(args.symbol));
+    },
+
+    recall_similar_trades: async (args) => {
+      try {
+        const outcomes = await getClosedTradeOutcomes(db);
+        return {
+          ok: true,
+          data: recallSimilarCases(outcomes, {
+            setup_type: (args.setup_type as SetupType | undefined) ?? null,
+            instrument_id: args.instrument_id ? String(args.instrument_id) : null,
+            regime: args.regime ? String(args.regime) : null,
+            side: args.side ? String(args.side) : null,
+          }),
+        };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
     },
 
     backtest_setup: async (args) => {

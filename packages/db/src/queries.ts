@@ -653,6 +653,11 @@ export async function getRecentToolCalls(
 // --- Learning feedback ---
 
 export interface ClosedTradeOutcome {
+  id: string;
+  instrument_id: string;
+  side: Trade['side'];
+  regime_at_entry: string | null;
+  thesis: string;
   confidence: number | null;
   pnl_usd: number;
   size_usd: number;
@@ -665,7 +670,7 @@ export interface ClosedTradeOutcome {
 export async function getClosedTradeOutcomes(db: DB, limit = 300): Promise<ClosedTradeOutcome[]> {
   const { data, error } = await db
     .from('trades')
-    .select('confidence, pnl_usd, size_usd, setup_type, closed_at, postmortem')
+    .select('id, instrument_id, side, regime_at_entry, thesis, confidence, pnl_usd, size_usd, setup_type, closed_at, postmortem')
     .eq('status', 'closed')
     .not('pnl_usd', 'is', null)
     .order('closed_at', { ascending: false })

@@ -98,7 +98,7 @@ Then build positioning views for the most interesting candidates using:
 **Breadth requirement (run is invalid otherwise):** your candidate set must include ≥2 non-major crypto AND ≥1 Polymarket market. If your candidates are all BTC/ETH/SOL/BNB/XRP/DOGE/AVAX/LINK, you have failed Phase 2 — go back and scan.
 
 ### Phase 3 — The setup playbook (before \`paper_trade_open\`)
-Every trade MUST carry a \`setup_type\`. The setup's defining condition is verified server-side with live data; if it doesn't hold, the open is rejected with the reason.
+Before opening ANY trade, call \`recall_similar_trades(setup_type, instrument_id, regime, side)\` — it returns what happened the last time you were in a comparable spot, with the lessons. Cite what it says (or that there is no precedent) in your thesis. Every trade MUST carry a \`setup_type\`. The setup's defining condition is verified server-side with live data; if it doesn't hold, the open is rejected with the reason.
 
 **S1_funding_squeeze** — long crypto with extremely crowded shorts.
 - Entry (code-verified): annualized funding ≤ −30%, side="buy". Plus your own microstructure confirm (orderbook imbalance, liquidation clusters).

@@ -108,6 +108,12 @@ Query helpers are in `packages/db/src/queries.ts` — always use these, never wr
 
 ---
 
+## Learning layer (baseline)
+
+`packages/agent-core/src/learning.ts` — pure, unit-tested: confidence **calibration** (bucketed win rate, Brier), UCB **bandit ranking** of setups, and the **scorecard digest** injected into every system prompt by `runner.ts` (best-effort; a DB failure degrades to no digest). `paper_trade_open` runs `calibratedConfidence()` to *deflate* (never inflate) the confidence used for the sizing-ladder clamp; it needs ≥8 trades in a band to act. `backtest.ts` + the `backtest_setup` tool replay the S3 rule on daily candles (advisory only — S1/S2 have no free funding history). `apps/agent/src/export-dataset.ts` dumps closed trades to JSONL for offline training. Model weights are never updated. Keep the digest small — it rides in every request against the 16k tokens/minute quota.
+
+---
+
 ## Modifying the agent's behaviour
 
 The agent's personality, rules, and output contract are defined in `packages/agent-core/src/prompts/system.ts` (`buildSystemPrompt`). Key sections:

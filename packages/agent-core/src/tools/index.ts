@@ -28,8 +28,10 @@ import {
   detectManipulationSignals,
   type FundingTier,
 } from './microstructure.js';
-import { getClosedTradesWithPostmortems } from '@loob/db';
+import { getClosedTradesWithPostmortems, getClosedTradeOutcomes } from '@loob/db';
 import { getTrendSignal } from './trend.js';
+import { backtestBreakout } from '../backtest.js';
+import { computeCalibration, rankSetups } from '../learning.js';
 import { sizingTierForSetup, maxAllowedSize } from '../sizing.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -360,7 +362,7 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
     },
     {
       name: 'get_portfolio_stats',
-      description: 'Get quantitative performance stats across all paper trades: win rate, realized PnL, open exposure, biggest win/loss, the cumulative PnL curve, AND the per-setup breakdown (n, expectancy, profit factor, current sizing-ladder tier and allowed base size for S1/S2/S3/D). Use this to self-grade the current formula against actual results and to know what size each setup has earned.',
+      description: 'Get quantitative performance stats across all paper trades: win rate, realized PnL, open exposure, biggest win/loss, the cumulative PnL curve, the per-setup breakdown (n, expectancy, profit factor, current sizing-ladder tier and allowed base size for S1/S2/S3/D), confidence CALIBRATION (stated confidence vs realized win rate per band, Brier score) and the bandit setupAttention ranking. Use this to self-grade the current formula against actual results and to know what size each setup has earned.',
       parameters: {
         type: Type.OBJECT,
         properties: {},
@@ -374,6 +376,18 @@ export function buildToolDeclarations(): FunctionDeclaration[] {
         type: Type.OBJECT,
         properties: {
           symbol: { type: Type.STRING, description: 'Crypto symbol, e.g. "BTC", "SOL"' },
+        },
+        required: ['symbol'],
+      },
+    },
+    {
+      name: 'backtest_setup',
+      description: 'Replay the S3 trend-breakout rule (same donchian + 1.25x volume entry and ATR trailing stop the server enforces, 0.30% round-trip cost) over up to ~3 years of daily candles for one crypto symbol. Returns trades, win rate, expectancy %, profit factor, max drawdown and a verdict (supportive / unsupportive / insufficient). ADVISORY sanity check before an S3 trade: an "unsupportive" verdict is a real warning — say in your thesis why this time differs, or skip. S1/S2 cannot be backtested (no free funding history).',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          symbol: { type: Type.STRING, description: 'Crypto symbol with a Binance USDT market, e.g. "BTC", "SOL"' },
+          lookback: { type: Type.NUMBER, description: 'Donchian window: 20 (default) or 55' },
         },
         required: ['symbol'],
       },
@@ -612,7 +626,11 @@ export function buildToolHandlers(
 
     get_portfolio_stats: async () => {
       try {
-        const [stats, breakdown] = await Promise.all([getPortfolioStats(db), getSetupBreakdown(db)]);
+        const [stats, breakdown, outcomes] = await Promise.all([
+          getPortfolioStats(db),
+          getSetupBreakdown(db),
+          getClosedTradeOutcomes(db),
+        ]);
         // Per-setup view with the sizing-ladder tier — the SAME computation
         // paper_trade_open enforces, so what the agent reads is what code clamps.
         const setups = Object.fromEntries(
@@ -631,7 +649,16 @@ export function buildToolHandlers(
           }),
         );
         // Trim the curve in the tool response — agent doesn't need every point
-        return { ok: true, data: { ...stats, pnlCurve: stats.pnlCurve.slice(-30), setups } };
+        return {
+          ok: true,
+          data: {
+            ...stats,
+            pnlCurve: stats.pnlCurve.slice(-30),
+            setups,
+            calibration: computeCalibration(outcomes),
+            setupAttention: rankSetups(breakdown),
+          },
+        };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
@@ -639,6 +666,21 @@ export function buildToolHandlers(
 
     get_trend_signal: async (args) => {
       return getTrendSignal(String(args.symbol));
+    },
+
+    backtest_setup: async (args) => {
+      const symbol = String(args.symbol ?? '').toUpperCase();
+      if (!symbol) return { ok: false, error: 'symbol required' };
+      const lookback = Number(args.lookback) === 55 ? 55 : 20;
+      const ohlc = await getCryptoOHLC(symbol, '1d', 1000);
+      if (!ohlc.ok) {
+        return { ok: false, error: `could not fetch daily OHLC for ${symbol}: ${ohlc.error}. Not every symbol has a Binance USDT market.` };
+      }
+      // Drop the still-forming daily candle, like the live S3 signal does.
+      const candles = ohlc.data.candles.slice(0, -1);
+      if (candles.length < 120) return { ok: false, error: `only ${candles.length} daily candles for ${symbol} — too little history to backtest` };
+      const { summary, trades } = backtestBreakout(symbol, candles, lookback);
+      return { ok: true, data: { ...summary, recentTrades: trades.slice(-5).map((t) => ({ side: t.side, pnlPct: Number(t.pnlPct.toFixed(2)), reason: t.reason, holdDays: t.exitIdx - t.entryIdx })) } };
     },
   };
 }

@@ -10,6 +10,7 @@ import type {
   SystemState,
   ToolCall,
   SetupType,
+  TradePostmortem,
 } from './types.js';
 
 // Using SupabaseClient without Database generic here keeps things simple.
@@ -647,4 +648,28 @@ export async function getRecentToolCalls(
     .limit(limit);
   if (error) throw new Error(`getRecentToolCalls: ${error.message}`);
   return (data ?? []) as ToolCall[];
+}
+
+// --- Learning feedback ---
+
+export interface ClosedTradeOutcome {
+  confidence: number | null;
+  pnl_usd: number;
+  size_usd: number;
+  setup_type: SetupType | null;
+  closed_at: string;
+  postmortem: TradePostmortem | null;
+}
+
+/** Closed trades, newest first — the raw material for calibration and the scorecard. */
+export async function getClosedTradeOutcomes(db: DB, limit = 300): Promise<ClosedTradeOutcome[]> {
+  const { data, error } = await db
+    .from('trades')
+    .select('confidence, pnl_usd, size_usd, setup_type, closed_at, postmortem')
+    .eq('status', 'closed')
+    .not('pnl_usd', 'is', null)
+    .order('closed_at', { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(`getClosedTradeOutcomes: ${error.message}`);
+  return (data ?? []) as ClosedTradeOutcome[];
 }

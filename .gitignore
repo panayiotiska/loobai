@@ -8,3 +8,4 @@ out/
 .DS_Store
 *.log
 .claude/
+loob-trades.jsonl

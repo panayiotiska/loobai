@@ -8,6 +8,8 @@ interface SystemPromptContext {
   pendingRequests: AgentRequest[];
   recentRuns: Run[];
   unconsumedNotes: Note[];
+  /** Code-computed scorecard (see learning.ts). Empty string when unavailable. */
+  learningDigest?: string;
 }
 
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
@@ -18,6 +20,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     pendingRequests,
     recentRuns,
     unconsumedNotes,
+    learningDigest,
   } = ctx;
 
   const tradesSummary = openTrades.length === 0
@@ -110,6 +113,7 @@ Every trade MUST carry a \`setup_type\`. The setup's defining condition is verif
 **S3_trend_breakout** — ride confirmed momentum.
 - Entry (code-verified): call \`get_trend_signal(symbol)\` first. Requires breakout_up_20/55 (long) or breakout_down_20/55 (short) AND volume ≥ 1.25× the 20d average. Trend regimes only.
 - Exit: exit_criteria.trailing_stop_pct seeded from the tool's suggestedTrailingStopPct. Wide stop, let it run.
+- Sanity check: call \`backtest_setup(symbol)\` — it replays this exact rule over ~3 years of daily candles. An "unsupportive" verdict is a warning: state in the thesis why this time differs, or skip. Advisory, not a gate.
 
 **D_discretionary** — anything else (Polymarket, news catalysts, novel ideas). Scout size only, and only ONE open D at a time (both code-enforced). D is a learning slot, not a trading strategy — never open a D trade because "the run needs a trade". If it deserves conviction size, it should fit S1/S2/S3.
 - Polymarket D trades additionally require: call \`get_polymarket_market(slug)\` first and QUOTE the exact resolution criteria in your thesis (on 2026-07-05 a trade was opened on "Gemini flagship" reasoning about the crypto exchange when the market resolves on Google's AI model — the thesis must prove you read the description). Skip markets whose lifetime volume is under ~100× your position size — a $100 position in a $100-volume market has no real fill.
@@ -158,6 +162,10 @@ End your response with one fenced \`\`\`json block matching the schema below.`
 4. If you close: \`paper_trade_close\` requires the structured postmortem.
 5. Do NOT rewrite FORMULA unless a position closed and a lesson MUST be recorded.
 6. Emit RunOutput JSON.`}
+
+## SCORECARD — computed by code from your closed trades (auto-injected every run)
+${learningDigest && learningDigest.trim() ? learningDigest : 'Unavailable this run — call get_portfolio_stats().'}
+Read it before deciding. If a confidence band is marked OVERCONFIDENT, your stated confidence in that band has not been earning its keep: code already deflates your size there, so lower your claims or find better evidence. Prefer setups with attention and positive expectancy; a thin-data setup is a legitimate experiment, not a licence to force trades.
 
 ## Epistemic rules (non-negotiable)
 - Every hypothesis has a confidence score (0.0–1.0). Inflated confidence to clear the gate is self-defeating and visible in your tool-call log.

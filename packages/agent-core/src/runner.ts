@@ -17,6 +17,7 @@ import {
 } from '@loob/db';
 
 import { buildSystemPrompt } from './prompts/system.js';
+import { buildLearningDigest } from './learning.js';
 import { runGeminiLoop, buildToolHandlersForRun, isTransientGeminiError } from './gemini-loop.js';
 import { buildToolDeclarations } from './tools/index.js';
 import { accrueFundingCarry, autoCloseTriggeredTrades, markOpenTradesToMarket } from './tools/paper-trade.js';
@@ -159,8 +160,19 @@ export async function runTick(kind: RunKind, opts: RunTickOptions = {}): Promise
         getUnconsumedNotes(db),
       ]);
 
+    // Code-computed scorecard (calibration, setup ranking, latest lessons) is
+    // pushed into every prompt, so feedback never depends on the model
+    // remembering to ask for it. Best-effort: a DB blip degrades to no digest.
+    let learningDigest = '';
+    try {
+      learningDigest = await buildLearningDigest(db);
+    } catch (e) {
+      log.warn({ msg: 'learning digest skipped', runId: run.id, err: String(e).slice(0, 200) });
+    }
+
     const systemPrompt = buildSystemPrompt({
       runKind: kind,
+      learningDigest,
       currentFormula,
       openTrades,
       pendingRequests,

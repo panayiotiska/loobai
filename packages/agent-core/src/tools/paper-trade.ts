@@ -9,6 +9,7 @@ import {
   updateOpenTradePeak,
   updateOpenTradeExitCriteria,
   getSetupBreakdown,
+  getClosedTradeOutcomes,
 } from '@loob/db';
 import type { Result } from '@loob/shared';
 import { ok, err } from '@loob/shared';
@@ -17,6 +18,7 @@ import { getPolymarketOrderbook } from './market-data.js';
 import { getCryptoDerivatives } from './derivatives.js';
 import { validateSetup } from './setup-validation.js';
 import { sizingTierForSetup, maxAllowedSize, MIN_TRADE_USD } from '../sizing.js';
+import { computeCalibration, calibratedConfidence } from '../learning.js';
 
 const DEFAULT_MAX_OPEN_EXPOSURE_USD = 10_000;
 const DEFAULT_SLIPPAGE_BPS = 5;
@@ -139,6 +141,8 @@ export interface PaperTradeDeps {
   updateOpenTradePeak: typeof updateOpenTradePeak;
   updateOpenTradeExitCriteria: typeof updateOpenTradeExitCriteria;
   getSetupBreakdown: typeof getSetupBreakdown;
+  /** Optional: absent in minimal test deps → calibration clamp is skipped. */
+  getClosedTradeOutcomes?: typeof getClosedTradeOutcomes;
   getCryptoPrice: typeof getCryptoPrice;
   getCryptoDerivatives: typeof getCryptoDerivatives;
   getPolymarketOrderbook: typeof getPolymarketOrderbook;
@@ -155,6 +159,7 @@ const defaultDeps: PaperTradeDeps = {
   updateOpenTradePeak,
   updateOpenTradeExitCriteria,
   getSetupBreakdown,
+  getClosedTradeOutcomes,
   getCryptoPrice,
   getCryptoDerivatives,
   getPolymarketOrderbook,
@@ -268,11 +273,22 @@ export async function paperTradeOpen(
     // realized results. The agent proposes, code clamps.
     const breakdown = await deps.getSetupBreakdown(db);
     const tier = sizingTierForSetup(breakdown[setupType]);
-    const ladderMax = maxAllowedSize(tier.baseUsd, confidence);
+    // Calibration clamp: stated confidence is deflated (never inflated) when
+    // trades claimed at that level have realized a lower win rate. Best-effort.
+    let calib = { stated: confidence, effective: confidence, adjusted: false, note: null as string | null };
+    try {
+      if (deps.getClosedTradeOutcomes) {
+        calib = calibratedConfidence(computeCalibration(await deps.getClosedTradeOutcomes(db)), confidence);
+      }
+    } catch {
+      /* calibration is advisory infrastructure — never block a trade on its failure */
+    }
+    const ladderMax = maxAllowedSize(tier.baseUsd, calib.effective);
     if (input.size_usd > ladderMax) {
       return err(
         `Sizing ladder (code-decided): ${setupType} is at ${tier.reason}. ` +
-          `Requested $${input.size_usd} > allowed $${ladderMax.toFixed(0)} at confidence ${confidence.toFixed(2)}. ` +
+          `Requested $${input.size_usd} > allowed $${ladderMax.toFixed(0)} at confidence ${calib.effective.toFixed(2)}` +
+          `${calib.note ? ` (${calib.note})` : ''}. ` +
           `Sizes scale automatically as the setup proves itself in realized results — resize to ≤ $${ladderMax.toFixed(0)}.`,
       );
     }

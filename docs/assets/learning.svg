@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 400" width="1000" height="400" role="img" aria-label="How feedback reaches the next run">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#e94560"/></marker></defs>
+  <rect width="1000" height="400" rx="20" fill="#16213e"/>
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" text-anchor="middle">
+    <g transform="translate(70,0)">
+    <g stroke="#e94560" stroke-width="2.5" fill="none" marker-end="url(#a)" stroke-dasharray="6 6">
+      <path d="M215 150 H275"><animate attributeName="stroke-dashoffset" from="0" to="-24" dur="1.2s" repeatCount="indefinite"/></path>
+      <path d="M545 150 H605"><animate attributeName="stroke-dashoffset" from="0" to="-24" dur="1.2s" repeatCount="indefinite"/></path>
+      <path d="M850 205 V255 H110 V205"><animate attributeName="stroke-dashoffset" from="0" to="-24" dur="1.2s" repeatCount="indefinite"/></path>
+    </g>
+    <g transform="translate(110,150)"><rect x="-100" y="-55" width="200" height="110" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-12" font-size="18" font-weight="700" fill="#fff">Closed trades</text><text y="14" font-size="13" fill="#c8d8e8">P&amp;L · stated confidence</text><text y="34" font-size="13" fill="#c8d8e8">postmortem lesson</text></g>
+
+    <g transform="translate(410,150)"><rect x="-135" y="-95" width="270" height="190" rx="14" fill="#e94560" fill-opacity=".18" stroke="#e94560" stroke-width="2"/><text y="-58" font-size="18" font-weight="700" fill="#fff">Scorecard (code)</text>
+      <text y="-28" font-size="13" fill="#c8d8e8">Calibration · Brier score</text>
+      <text y="-6" font-size="13" fill="#c8d8e8">Bandit ranking per setup</text>
+      <text y="16" font-size="13" fill="#c8d8e8">Sizing ladder tiers</text>
+      <text y="38" font-size="13" fill="#c8d8e8">Overconfidence → smaller size</text>
+      <text y="68" font-size="12" fill="#7a8fa6">never inflates, only deflates</text></g>
+
+    <g transform="translate(730,150)"><rect x="-125" y="-55" width="250" height="110" rx="14" fill="#0f3460" stroke="#7a8fa6"/><text y="-12" font-size="18" font-weight="700" fill="#fff">Next run's prompt</text><text y="14" font-size="13" fill="#c8d8e8">scorecard injected every run</text><text y="34" font-size="13" fill="#c8d8e8">no tool call needed</text></g>
+
+    <g transform="translate(940,150)"></g>
+    <text x="410" y="285" font-size="13" fill="#7a8fa6">the loop closes every tick</text>
+
+    </g>
+    <!-- bottom row -->
+    <g transform="translate(40,315)" text-anchor="start">
+      <rect width="440" height="64" rx="12" fill="#0f3460"/><text x="16" y="26" font-size="15" font-weight="700" fill="#fff">Backtester</text><text x="16" y="48" font-size="13" fill="#c8d8e8">replays the S3 rule over ~3 years of daily candles</text>
+      <rect x="480" width="440" height="64" rx="12" fill="#0f3460"/><text x="496" y="26" font-size="15" font-weight="700" fill="#fff">Dataset export</text><text x="496" y="48" font-size="13" fill="#c8d8e8">context → decision → reward JSONL, ready for offline training</text>
+    </g>
+  </g>
+</svg>

@@ -27,15 +27,20 @@ The agent names a setup. **Code** checks the market and rejects the trade if the
 
 ## Is it self-learning?
 
-**Self-improving, not self-training.** Model weights never change. What changes is the memory the next run reads, and the rules code enforces.
+**Self-improving, not self-training.** Model weights never change. What changes is the feedback the next run is forced to see, and the clamps code applies to it.
+
+<p align="center"><img src="docs/assets/learning.svg" alt="Feedback loop" width="100%"></p>
 
 | | |
 |---|---|
-| ✅ Every closed trade needs a structured postmortem (skill vs luck, lesson) | feeds `FORMULA.md` |
-| ✅ Position size is earned from each setup's realized results | code-owned, not LLM-owned |
-| ✅ Every formula version is stored and guarded | nothing is ever lost |
-| ❌ No fine-tuning, RL, or backtests | the model is the same every run |
-| ❌ No confidence-vs-outcome calibration yet | on the roadmap |
+| ✅ Postmortem on every closed trade (skill vs luck, lesson) | feeds `FORMULA.md` |
+| ✅ Size is earned per setup from realized results | sizing ladder, code-owned |
+| ✅ **Scorecard injected into every prompt** | no reliance on the model asking for it |
+| ✅ **Confidence calibration** (stated vs realized win rate, Brier score) | overconfident bands get smaller size, never bigger |
+| ✅ **Bandit ranking** of setups (expectancy + exploration bonus) | advisory attention weights |
+| ✅ **Backtester** for the S3 breakout rule (`backtest_setup`) | ~3 years of daily candles |
+| ✅ **Dataset export** (`pnpm --filter @loob/agent run export-dataset`) | context → decision → reward JSONL |
+| ❌ Model weights are frozen | the export is the on-ramp to offline fine-tuning, not fine-tuning itself |
 
 ## Architecture
 
@@ -44,7 +49,7 @@ The agent names a setup. **Code** checks the market and rejects the trade if the
 ```
 packages/shared      Zod schemas, formula guard
 packages/db          Supabase client, queries, migrations
-packages/agent-core  Gemma tool loop, 24 tools, sizing ladder, runner
+packages/agent-core  Gemma tool loop, 26 tools, sizing ladder, runner
 apps/agent           research-tick · monitor-tick entry points
 apps/web             Laab Room UI + Telegram webhook
 ```

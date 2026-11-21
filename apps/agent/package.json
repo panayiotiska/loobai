@@ -8,6 +8,7 @@
     "monitor": "dotenv -e ../../.env -- tsx src/monitor-tick.ts",
     "research:ci": "tsx src/research-tick.ts",
     "monitor:ci": "tsx src/monitor-tick.ts",
+    "export-dataset": "dotenv -e ../../.env -- tsx src/export-dataset.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
@@ -17,6 +18,7 @@
     "@loob/shared": "workspace:*"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "dotenv-cli": "^7.4.2",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4"
